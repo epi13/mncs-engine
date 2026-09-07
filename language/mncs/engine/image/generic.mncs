@@ -1,0 +1,106 @@
+mncs 0.10;
+
+// engine.image.generic — Nat-generic flat-buffer algorithms over `[i64; N]`.
+//
+// These are the size-agnostic image primitives: the same source clears,
+// counts, checksums, reads, writes, and blits a 16-lane row, a 64-lane
+// FB8 plane, or any future flat buffer at monomorphization. What generics
+// cannot do bounds this module (see ENG-PRESSURE-0018..0021):
+//   - records cannot take Nat params, so descriptors stay concrete;
+//   - `[v; N]` repeat construction does not exist: callers supply a base
+//     buffer (usually a literal) and these functions transform it;
+//   - Nat is not a value: lengths the algorithm needs travel as explicit
+//     `n` arguments beside the buffer;
+//   - `[T; N]` with N > 64 is rejected (MNE225 profile ceiling).
+// Pixels are packed RGBA i64 (see engine.image.color): non-negative,
+// below 2^32. Out-of-bounds reads observe 0, out-of-bounds writes keep
+// the buffer unchanged: every function is total.
+module engine.image.generic;
+
+// Fill every lane with v (transform pattern: the caller owns construction).
+fn gclear<N: Nat>(xs: [i64; N], v: i64) -> (result: [i64; N]) {
+    iterate i over xs carrying out: [i64; N] = xs {
+        next out = replace(out, i, v);
+    }
+    return out;
+}
+
+// Lanes equal to v.
+fn gcount<N: Nat>(xs: [i64; N], v: i64) -> (result: i64) {
+    iterate i over xs carrying hits: i64 = 0 {
+        next hits = hits + ((xs[i] == v) as i64);
+    }
+    return hits;
+}
+
+// Deterministic digest: h = h *% 31 +% lane, row-major by index.
+fn gchecksum<N: Nat>(xs: [i64; N]) -> (result: i64) {
+    iterate i over xs carrying h: i64 = 0 {
+        next h = (h *% 31) +% xs[i];
+    }
+    return h;
+}
+
+// Total read over the first n lanes: beyond n observes 0. The length n
+// travels explicitly because Nat is not a value (ENG-PRESSURE-0020), and
+// the caller must pass n <= N: the monomorphized bound is not visible
+// inside the generic body, so an n above N is a caller error, not a
+// checked condition.
+fn gget<N: Nat>(xs: [i64; N], i: u64, n: u64) -> (result: i64) {
+    if i < n {
+        return xs[i];
+    }
+    return 0;
+}
+
+// Total write over the first n lanes: beyond n keeps the buffer (same
+// caller contract on n as gget).
+fn gput<N: Nat>(xs: [i64; N], i: u64, n: u64, v: i64) -> (result: [i64; N]) {
+    if i < n {
+        return replace(xs, i, v);
+    }
+    return xs;
+}
+
+// Fill lanes [xa, xb) intersected with [0, n).
+fn gspan<N: Nat>(xs: [i64; N], xa: i64, xb: i64, n: i64, v: i64) -> (result: [i64; N]) {
+    iterate i over xs carrying out: [i64; N] = xs {
+        let c: i64 = i as i64;
+        let inside: bool = ((c >= xa) && (c < xb)) && ((c >= 0) && (c < n));
+        next out = replace(out, i, select(inside, v, out[i]));
+    }
+    return out;
+}
+
+// Same-size blit with a transparent-pixel rule: source lanes equal to
+// `skip` leave the destination unchanged.
+fn gblit<N: Nat>(dst: [i64; N], src: [i64; N], skip: i64) -> (result: [i64; N]) {
+    iterate i over dst carrying out: [i64; N] = dst {
+        next out = replace(out, i, select(src[i] == skip, out[i], src[i]));
+    }
+    return out;
+}
+
+// ---- Conformance probes (N = 16 rows, N = 64 FB8 planes) ----
+
+fn probe_clear16() -> (result: i64) {
+    let xs: [i64; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    return gchecksum<16>(gclear<16>(xs, 7));
+}
+
+fn probe_count16() -> (result: i64) {
+    let xs: [i64; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    return gcount<16>(gspan<16>(xs, 4, 12, 16, 99), 99);
+}
+
+fn probe_getput() -> (result: i64) {
+    let xs: [i64; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    let w: [i64; 16] = gput<16>(xs, 3, 16, 100);
+    return gget<16>(w, 3, 16) + gget<16>(w, 30, 16) + gget<16>(xs, 30, 16);
+}
+
+fn probe_blit16() -> (result: i64) {
+    let dst: [i64; 16] = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+    let src: [i64; 16] = [0, 2, 0, 4, 0, 6, 0, 8, 0, 10, 0, 12, 0, 14, 0, 16];
+    return gchecksum<16>(gblit<16>(dst, src, 0));
+}

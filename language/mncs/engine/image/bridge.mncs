@@ -1,0 +1,92 @@
+mncs 0.10;
+
+// engine.image.bridge — projection between engine framebuffers and the
+// language substrate (`mncs.core.image`, `mncs.core.sequences`).
+//
+// Reuse boundary (§17): channel packing, RGBA semantics, and engine-size
+// frames stay engine-side; grayscale observation ops (Sobel, threshold,
+// invert) and generic folds are reused from stdlib, never reimplemented.
+// Projection is exact: engine gray channel values round-trip through
+// bytes unchanged, pinned by probes below.
+//
+// Name discipline (see ENG-PRESSURE-0017): every local name is checked
+// against the union of the imported modules' function names; the bridge
+// defines no `blank`, `count*`, `get_pixel`, or `sum`.
+module engine.image.bridge;
+
+use engine.image.framebuffer as fb;
+use engine.image.color as color;
+use engine.image.generic as gen;
+use mncs.core.image.v1 as cimg;
+use mncs.core.sequences.v1 as seq;
+
+// Project one FB8 lane to a gray byte via the BT.601 luma path.
+fn lane_gray(px: i64) -> (result: byte) {
+    return (color.unpack_r(color.grayscale(px)) % 256) as byte;
+}
+
+fn gray_lane(g: byte) -> (result: i64) {
+    let y: i64 = (g as u64) as i64;
+    return color.pack_rgba(y, y, y, 255);
+}
+
+// Whole-frame projection FB8 -> core 8x8 gray frame.
+fn fb8_to_gray(frame: fb.FB8) -> (result: [byte; 64]) {
+    iterate i over frame.px carrying out: [byte; 64] = cimg.blank(0) {
+        next out = replace(out, i, lane_gray(frame.px[i]));
+    }
+    return out;
+}
+
+// Whole-frame unprojection back to packed opaque gray FB8.
+fn gray_to_fb8(img: [byte; 64]) -> (result: fb.FB8) {
+    iterate i over img carrying acc: fb.FB8 = fb.blank8(0) {
+        next acc = fb.set8(acc, i / 8, i % 8, gray_lane(img[i]));
+    }
+    return acc;
+}
+
+// Stdlib fold reuse: count lanes through the generic sequence library.
+// Must agree with the engine counter exactly (probe_seq_agree).
+fn bridge_seq_count(frame: fb.FB8, v: i64) -> (result: i64) {
+    return seq.count<64>(frame.px, v);
+}
+
+// Edge pixels observed through the stdlib Sobel + threshold path.
+fn bridge_edge_count(frame: fb.FB8, level: byte) -> (result: u64) {
+    let mags: [byte; 64] = cimg.sobel_magnitude(fb8_to_gray(frame));
+    return cimg.count_above(mags, level);
+}
+
+// ---- Conformance probes ----
+
+// Gray values survive projection and unprojection lane-for-lane.
+fn probe_roundtrip() -> (result: i64) {
+    let frame: fb.FB8 = fb.set8(fb.set8(fb.blank8(255), 0, 0, 4278190335), 7, 7, 16711935);
+    let back: fb.FB8 = gray_to_fb8(fb8_to_gray(frame));
+    return fb.fb8_count(back, gray_lane(lane_gray(255)));
+}
+
+// Stdlib fold and engine counter agree on the same plane.
+fn probe_seq_agree() -> (result: i64) {
+    let frame: fb.FB8 = fb.set8(fb.blank8(0), 3, 4, 42);
+    let a: i64 = bridge_seq_count(frame, 42);
+    let b: i64 = fb.fb8_count(frame, 42);
+    return select(a == b, a, 0 - 1);
+}
+
+// A single bright pixel on black has Sobel edges above a low threshold.
+fn probe_edges_lit() -> (result: i64) {
+    let dark: fb.FB8 = fb.blank8(0);
+    let frame: [i64; 64] = gen.gclear<64>(dark.px, 255);
+    let one: fb.FB8 = fb.set8(fb.FB8 { px: frame }, 4, 4, 4294967295);
+    return (bridge_edge_count(one, 10) > 0) as i64;
+}
+
+// Double inversion through stdlib is the identity on engine frames.
+fn probe_invert_twice() -> (result: i64) {
+    let frame: fb.FB8 = fb.set8(fb.blank8(100), 2, 2, 200);
+    let gray: [byte; 64] = fb8_to_gray(frame);
+    let back: fb.FB8 = gray_to_fb8(cimg.invert(cimg.invert(gray)));
+    return fb.fb8_count(back, gray_lane(lane_gray(100)));
+}

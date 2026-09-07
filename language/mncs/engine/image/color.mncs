@@ -138,8 +138,10 @@ fn grayscale(px: i64) -> (result: i64) {
     return pack_rgba(y, y, y, 255);
 }
 
-// Per-channel inversion, preserving alpha.
-fn invert(px: i64) -> (result: i64) {
+// Per-channel inversion, preserving alpha. Named invert_channels (not
+// invert) because mncs.core.image also defines `invert` and shared
+// unqualified names refuse LLVM/C11/Cranelift programs (ENG-PRESSURE-0017).
+fn invert_channels(px: i64) -> (result: i64) {
     let full: i64 = 255;
     return pack_rgba(full -% unpack_r(px), full -% unpack_g(px), full -% unpack_b(px), unpack_a(px));
 }
