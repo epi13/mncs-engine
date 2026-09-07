@@ -1,0 +1,77 @@
+mncs 0.10;
+
+// Passing workaround pins for ENG-PRESSURE-0018..0021 (Phase B/D shape
+// workarounds): nested records in place of over-long flat sequences,
+// a Nat-generic fill function in place of generic records and repeat
+// literals, and counter-suffixed rebinding in place of shadowing.
+module pressure.shapes_fill;
+
+// 8x8 nested frame filled with 0..63 row-major (the FB32/FB64 idiom at
+// small scale: both nesting levels stay under the 64-lane ceiling).
+// The grid travels in a record wrapper: bare nested sequences in
+// signatures would poison importers (ENG-PRESSURE-0011), so every
+// signature here names Grid8 and only bodies touch `.cells`.
+record Grid8 { cells: [[i64; 8]; 8] }
+
+fn probe_nest8x8() -> (result: i64) {
+    let grid: Grid8 = blank8x8();
+    iterate r over grid.cells carrying acc: Grid8 = grid {
+        next acc = fill_nest_row(acc, r);
+    }
+    return nest_checksum(acc);
+}
+
+fn blank8x8() -> (result: Grid8) {
+    let z8: [i64; 8] = [0, 0, 0, 0, 0, 0, 0, 0];
+    return Grid8 { cells: [z8, z8, z8, z8, z8, z8, z8, z8] };
+}
+
+fn fill_nest_row(grid: Grid8, r: u64) -> (result: Grid8) {
+    let row: [i64; 8] = grid.cells[r];
+    iterate c over row carrying out: [i64; 8] = row {
+        next out = replace(out, c, (r as i64) *% 8 +% (c as i64));
+    }
+    return Grid8 { cells: replace(grid.cells, r, out) };
+}
+
+fn nest_checksum(grid: Grid8) -> (result: i64) {
+    iterate r over grid.cells carrying h: i64 = 0 {
+        next h = nest_row_hash(h, grid.cells[r]);
+    }
+    return h;
+}
+
+fn nest_row_hash(h: i64, row: [i64; 8]) -> (result: i64) {
+    iterate c over row carrying acc: i64 = h {
+        next acc = (acc *% 31) +% row[c];
+    }
+    return acc;
+}
+
+// Nat-generic fill: the repeat-literal stand-in (`[v; N]` is rejected,
+// ENG-PRESSURE-0020) written once over `[i64; W]` instead of once per
+// width (records cannot be generic, ENG-PRESSURE-0019).
+fn grow_fill<W: Nat>(row: [i64; W], v: i64) -> (result: [i64; W]) {
+    iterate i over row carrying out: [i64; W] = row {
+        next out = replace(out, i, v);
+    }
+    return out;
+}
+
+fn probe_fill8() -> (result: i64) {
+    let base: [i64; 8] = [0, 0, 0, 0, 0, 0, 0, 0];
+    let full: [i64; 8] = grow_fill<8>(base, 7);
+    iterate c over full carrying h: i64 = 0 {
+        next h = (h *% 31) +% full[c];
+    }
+    return h;
+}
+
+// Counter-suffixed rebinding: shadowing is rejected (ENG-PRESSURE-0021),
+// so every update step takes a fresh name.
+fn probe_rebind() -> (result: i64) {
+    let v0: i64 = 1;
+    let v1: i64 = v0 +% 1;
+    let v2: i64 = v1 *% 2;
+    return v2;
+}

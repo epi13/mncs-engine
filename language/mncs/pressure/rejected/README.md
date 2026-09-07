@@ -22,6 +22,10 @@ mncs source-study language/mncs/pressure/rejected/<file>.mncs
 | `n0010.mncs` | 0010 | `MNB101` (u64 traversal domain) |
 | `n0011a.mncs` + `n0011lib.mncs` | 0011 | `MNE117` + `MNE133` (nested-seq argument) |
 | `n0011b.mncs` + `n0011lib.mncs` | 0011 | `MNE135` + `MNE115` (nested-seq result) |
+| `n0018.mncs` | 0018 | `MNE105` (over-long sequence type) + `MNE186` cascade |
+| `n0019.mncs` | 0019 | `MNP123` + `MNP127`/`MNP128`/`MNP007` (generic record header) |
+| `n0020.mncs` | 0020 | `MNP157` + `MNP061` desync (repeat literal) |
+| `n0021.mncs` | 0021 | `MNE110` (rebinding in the same scope) |
 
 The `*lib.mncs` callees elaborate cleanly on their own; the failure is at
 the cross-module boundary in the caller.

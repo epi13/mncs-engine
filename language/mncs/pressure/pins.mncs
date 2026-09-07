@@ -21,6 +21,7 @@ use pressure.clip_guard as p0012;
 use pressure.fixed_pool as p0013;
 use pressure.hash_stream as p0014;
 use pressure.neighborhood as p0015;
+use pressure.shapes_fill as pshape;
 
 fn pp_fmul() -> (result: i64) {
     return p0002.probe_fmul();
@@ -80,4 +81,16 @@ fn pp_stream4() -> (result: i64) {
 
 fn pp_nbcounts() -> (result: i64) {
     return p0015.probe_counts();
+}
+
+fn pp_nest8x8() -> (result: i64) {
+    return pshape.probe_nest8x8();
+}
+
+fn pp_fill8() -> (result: i64) {
+    return pshape.probe_fill8();
+}
+
+fn pp_rebind() -> (result: i64) {
+    return pshape.probe_rebind();
 }

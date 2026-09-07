@@ -68,31 +68,31 @@ fn draw_cube_tri(frame: rast.RastFrame, mvp: [i64; 16], t: i64, face_color: i64)
     let i2: i64 = mesh.cube_tri_pos_id(t, 2);
     return match cube_corner_screen(mvp, i0, 0, 0, 0, 0, 0) {
         cam.ScreenVert.Clipped => frame,
-        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => draw_cube_tri_1(frame, mvp, t, face_color, x, y, z),
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v, w } => draw_cube_tri_1(frame, mvp, t, face_color, x, y, z, w),
     };
 }
 
-fn draw_cube_tri_1(frame: rast.RastFrame, mvp: [i64; 16], t: i64, face_color: i64, x0: i64, y0: i64, z0: i64) -> (result: rast.RastFrame) {
+fn draw_cube_tri_1(frame: rast.RastFrame, mvp: [i64; 16], t: i64, face_color: i64, x0: i64, y0: i64, z0: i64, w0: i64) -> (result: rast.RastFrame) {
     let i1: i64 = mesh.cube_tri_pos_id(t, 1);
     let i2: i64 = mesh.cube_tri_pos_id(t, 2);
     return match cube_corner_screen(mvp, i1, 0, 0, 0, 0, 0) {
         cam.ScreenVert.Clipped => frame,
-        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => draw_cube_tri_2(frame, mvp, t, face_color, x0, y0, z0, x, y, z),
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v, w } => draw_cube_tri_2(frame, mvp, t, face_color, x0, y0, z0, w0, x, y, z, w),
     };
 }
 
-fn draw_cube_tri_2(frame: rast.RastFrame, mvp: [i64; 16], t: i64, face_color: i64, x0: i64, y0: i64, z0: i64, x1: i64, y1: i64, z1: i64) -> (result: rast.RastFrame) {
+fn draw_cube_tri_2(frame: rast.RastFrame, mvp: [i64; 16], t: i64, face_color: i64, x0: i64, y0: i64, z0: i64, w0: i64, x1: i64, y1: i64, z1: i64, w1: i64) -> (result: rast.RastFrame) {
     let i2: i64 = mesh.cube_tri_pos_id(t, 2);
     return match cube_corner_screen(mvp, i2, 0, 0, 0, 0, 0) {
         cam.ScreenVert.Clipped => frame,
-        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => draw_cube_tri_3(frame, t, face_color, x0, y0, z0, x1, y1, z1, x, y, z),
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v, w } => draw_cube_tri_3(frame, t, face_color, x0, y0, z0, w0, x1, y1, z1, w1, x, y, z, w),
     };
 }
 
-fn draw_cube_tri_3(frame: rast.RastFrame, t: i64, face_color: i64, x0: i64, y0: i64, z0: i64, x1: i64, y1: i64, z1: i64, x2: i64, y2: i64, z2: i64) -> (result: rast.RastFrame) {
-    let s0: rast.SVert = rast.SVert { x: x0, y: y0, z: z0, r: 0, g: 0, b: 0, u: 0, v: 0, w: 65536 };
-    let s1: rast.SVert = rast.SVert { x: x1, y: y1, z: z1, r: 0, g: 0, b: 0, u: 0, v: 0, w: 65536 };
-    let s2: rast.SVert = rast.SVert { x: x2, y: y2, z: z2, r: 0, g: 0, b: 0, u: 0, v: 0, w: 65536 };
+fn draw_cube_tri_3(frame: rast.RastFrame, t: i64, face_color: i64, x0: i64, y0: i64, z0: i64, w0: i64, x1: i64, y1: i64, z1: i64, w1: i64, x2: i64, y2: i64, z2: i64, w2: i64) -> (result: rast.RastFrame) {
+    let s0: rast.SVert = rast.SVert { x: x0, y: y0, z: z0, r: 0, g: 0, b: 0, u: 0, v: 0, w: w0 };
+    let s1: rast.SVert = rast.SVert { x: x1, y: y1, z: z1, r: 0, g: 0, b: 0, u: 0, v: 0, w: w1 };
+    let s2: rast.SVert = rast.SVert { x: x2, y: y2, z: z2, r: 0, g: 0, b: 0, u: 0, v: 0, w: w2 };
     return rast.rasterize_flat(frame, s0, s1, s2, face_color);
 }
 
@@ -270,28 +270,28 @@ fn draw_cube_tri_tex(frame: rast.RastFrame, mvp: [i64; 16], t: i64, tex: fb.FB16
 fn draw_tex_verts(frame: rast.RastFrame, q0: v4.Vec4, q1: v4.Vec4, q2: v4.Vec4, uv0: i64, uv1: i64, uv2: i64, tex: fb.FB16) -> (result: rast.RastFrame) {
     return match cam.clip_to_screen(q0, 0, 0, 0, uv0 / 65536, uv0 % 65536) {
         cam.ScreenVert.Clipped => frame,
-        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => draw_tex_verts_1(frame, q1, q2, uv1, uv2, tex, x, y, z, u, v),
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v, w } => draw_tex_verts_1(frame, q1, q2, uv1, uv2, tex, x, y, z, w, u, v),
     };
 }
 
-fn draw_tex_verts_1(frame: rast.RastFrame, q1: v4.Vec4, q2: v4.Vec4, uv1: i64, uv2: i64, tex: fb.FB16, x0: i64, y0: i64, z0: i64, u0: i64, v0: i64) -> (result: rast.RastFrame) {
+fn draw_tex_verts_1(frame: rast.RastFrame, q1: v4.Vec4, q2: v4.Vec4, uv1: i64, uv2: i64, tex: fb.FB16, x0: i64, y0: i64, z0: i64, w0: i64, u0: i64, v0: i64) -> (result: rast.RastFrame) {
     return match cam.clip_to_screen(q1, 0, 0, 0, uv1 / 65536, uv1 % 65536) {
         cam.ScreenVert.Clipped => frame,
-        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => draw_tex_verts_2(frame, q2, uv2, tex, x0, y0, z0, u0, v0, x, y, z, u, v),
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v, w } => draw_tex_verts_2(frame, q2, uv2, tex, x0, y0, z0, w0, u0, v0, x, y, z, w, u, v),
     };
 }
 
-fn draw_tex_verts_2(frame: rast.RastFrame, q2: v4.Vec4, uv2: i64, tex: fb.FB16, x0: i64, y0: i64, z0: i64, u0: i64, v0: i64, x1: i64, y1: i64, z1: i64, u1: i64, v1: i64) -> (result: rast.RastFrame) {
+fn draw_tex_verts_2(frame: rast.RastFrame, q2: v4.Vec4, uv2: i64, tex: fb.FB16, x0: i64, y0: i64, z0: i64, w0: i64, u0: i64, v0: i64, x1: i64, y1: i64, z1: i64, w1: i64, u1: i64, v1: i64) -> (result: rast.RastFrame) {
     return match cam.clip_to_screen(q2, 0, 0, 0, uv2 / 65536, uv2 % 65536) {
         cam.ScreenVert.Clipped => frame,
-        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => draw_tex_tri(frame, tex, x0, y0, z0, u0, v0, x1, y1, z1, u1, v1, x, y, z, u, v),
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v, w } => draw_tex_tri(frame, tex, x0, y0, z0, w0, u0, v0, x1, y1, z1, w1, u1, v1, x, y, z, w, u, v),
     };
 }
 
-fn draw_tex_tri(frame: rast.RastFrame, tex: fb.FB16, x0: i64, y0: i64, z0: i64, u0: i64, v0: i64, x1: i64, y1: i64, z1: i64, u1: i64, v1: i64, x2: i64, y2: i64, z2: i64, u2: i64, v2: i64) -> (result: rast.RastFrame) {
-    let s0: rast.SVert = rast.SVert { x: x0, y: y0, z: z0, r: 0, g: 0, b: 0, u: u0, v: v0, w: 65536 };
-    let s1: rast.SVert = rast.SVert { x: x1, y: y1, z: z1, r: 0, g: 0, b: 0, u: u1, v: v1, w: 65536 };
-    let s2: rast.SVert = rast.SVert { x: x2, y: y2, z: z2, r: 0, g: 0, b: 0, u: u2, v: v2, w: 65536 };
+fn draw_tex_tri(frame: rast.RastFrame, tex: fb.FB16, x0: i64, y0: i64, z0: i64, w0: i64, u0: i64, v0: i64, x1: i64, y1: i64, z1: i64, w1: i64, u1: i64, v1: i64, x2: i64, y2: i64, z2: i64, w2: i64, u2: i64, v2: i64) -> (result: rast.RastFrame) {
+    let s0: rast.SVert = rast.SVert { x: x0, y: y0, z: z0, r: 0, g: 0, b: 0, u: u0, v: v0, w: w0 };
+    let s1: rast.SVert = rast.SVert { x: x1, y: y1, z: z1, r: 0, g: 0, b: 0, u: u1, v: v1, w: w1 };
+    let s2: rast.SVert = rast.SVert { x: x2, y: y2, z: z2, r: 0, g: 0, b: 0, u: u2, v: v2, w: w2 };
     return rast.rasterize_textured(frame, s0, s1, s2, tex);
 }
 
@@ -326,7 +326,7 @@ fn dbg_mvp10() -> (result: i64) {
 fn dbg_corner4() -> (result: i64) {
     return match cube_corner_screen(cube_mvp(0), 4, 0, 0, 0, 0, 0) {
         cam.ScreenVert.Clipped => 0 - 1,
-        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => (x *% 16) +% y,
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v, w } => (x *% 16) +% y,
     };
 }
 
@@ -337,20 +337,20 @@ fn dbg_tri0_area() -> (result: i64) {
     let vc: cam.ScreenVert = cube_corner_screen(mvp, 5, 0, 0, 0, 0, 0);
     return match va {
         cam.ScreenVert.Clipped => 0 - 1000,
-        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => dbg_tri0_area_1(vb, vc, x, y),
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v, w } => dbg_tri0_area_1(vb, vc, x, y),
     };
 }
 
 fn dbg_tri0_area_1(vb: cam.ScreenVert, vc: cam.ScreenVert, ax: i64, ay: i64) -> (result: i64) {
     return match vb {
         cam.ScreenVert.Clipped => 0 - 2000,
-        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => dbg_tri0_area_2(vc, ax, ay, x, y),
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v, w } => dbg_tri0_area_2(vc, ax, ay, x, y),
     };
 }
 
 fn dbg_tri0_area_2(vc: cam.ScreenVert, ax: i64, ay: i64, bx: i64, by: i64) -> (result: i64) {
     return match vc {
         cam.ScreenVert.Clipped => 0 - 3000,
-        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => ((((bx -% ax) *% (y -% ay)) -% ((by -% ay) *% (x -% ax)))),
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v, w } => ((((bx -% ax) *% (y -% ay)) -% ((by -% ay) *% (x -% ax)))),
     };
 }

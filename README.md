@@ -97,6 +97,21 @@ not isqrt; 0011 is elaboration rejection, not corruption) and one did
 not reproduce (0003). Deliberately unproven: PTX/GPU execution, Fabric
 distribution, verifier loops, window/input boundaries.
 
+Pressure campaign 02 (branch `engine/pressure-campaign-02`, in progress):
+generic/large/bridge image modules, native PPM artifacts
+(`evidence/c02/*.ppm`), NDC clip + perspective-correct texturing in the
+rasterizer (reference-exact vs independent models), ledger extended to
+ENG-PRESSURE-0023 with reproducers (`pressure/rejected/n0018..n0021`)
+and three new regression pins, 0012 closed (clip built), 0011/0017
+refined with second instances, 0022 (`select` strictness, minimized
+runtime probe) and 0023 (`fx_narrow_trunc` negative rounding, pinned by
+the new 8-disc circle-collision module, 9/9 model-exact on reference).
+Final matrix for the new corpora: 9 corpora × 5 backends = 45/45 PASS
+(image-generic 4, image-large 6, image-bridge 4, render-ppm 6,
+raster-rasterizer 16, scene-scene 14, scene-camera 5, pressure-pins 18,
+simulation-collision 9), zero divergences. Evidence under
+`MNCS_EVIDENCE_DIR` (`/home/epi13/mncs-engine-evidence/c02-matrix`).
+
 ## License
 
 Apache-2.0, consistent with the MNCS project family.

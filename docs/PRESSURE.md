@@ -314,6 +314,12 @@ with per-file expected diagnostics in that directory's `README.md`.
   `pressure.pins` exclusion comment.
 - **Status**: open (refined this run from "corrupt" to "rejected + import
   poisoning").
+- **Re-confirmed (campaign-02)**: `pressure.shapes_fill` with bare nested
+  sequences in helper signatures poisoned the `pressure.pins` importer
+  (`MNB036`/`MNB005`/`MNB052`/`MNB051` body mismatches on the importer's
+  elaboration of the *imported* functions); wrapping the grid in `Grid8`
+  cleared it. Import poisoning reaches helper signatures, not just the
+  signatures the importer calls.
 
 ### ENG-PRESSURE-0012 — no frustum clipping (engine limitation, documented)
 
@@ -338,7 +344,16 @@ with per-file expected diagnostics in that directory's `README.md`.
   express the bounded clip loop cleanly).
 - **Evidence**: `raster-rasterizer` cull/wzero goldens; pin
   `pressure-pins#wzero`.
-- **Status**: open (engine-side; blocked on nothing, just unbuilt).
+- **Status**: closed this run (engine-side): `engine.raster.rasterizer`
+  now clips in NDC with a fixed-topology Sutherland–Hodgman stage (three
+  half-plane passes over a 9-slot lane array, all six attributes plus
+  `w` interpolated) behind a `w`-floor guard band (verts at `w <= 0`
+  are floored to `W_FLOOR` before projection, so straddling triangles
+  clip instead of vanishing). Evidence: `raster-rasterizer` goldens
+  (`clip-inside`, `clip-straddle`, `clip-straddle-count`, `clip-behind`,
+  `clip-graze`, `persp`, `persp-left-count`) and the
+  `scene-scene`/`scene-camera` textured-cube goldens, all reference-exact
+  against independent Python fixed-point models.
 
 ### ENG-PRESSURE-0013 — no unbounded sequences (fixed pools only)
 
@@ -488,6 +503,177 @@ with per-file expected diagnostics in that directory's `README.md`.
   `pressure-pins` FAIL-15 → PASS-15 on LLVM-IR across the rename commit.
 - **Status**: open (engine side worked around by globally-unique helper
   names; the language-side fix is qualified lowering).
+- **Second instance (campaign-02)**: `engine.image.color.invert` collided
+  with `mncs.core.image.invert` through `framebuffer`'s transitive import
+  and made the bridge program `unsupported` on LLVM-IR; renaming to
+  `color.invert_channels` cleared it. Collision reach is transitive, not
+  just same-program text.
+
+### ENG-PRESSURE-0018 — flat sequences capped at 64 lanes (MNE105)
+
+- **Area**: type system (bounded-sequence formation).
+- **Workload**: `engine.image.large` (32×32 / 64×64 frames),
+  `engine.render.ppm` (byte buffers shaped `[byte; 11]+[[byte; 3]; 64]`).
+- **Desired MNCS expression**: `[i64; 65]` (or any flat lane count above
+  64) as a parameter, local, or literal type.
+- **Observed limitation**: the type itself is rejected at elaboration
+  (`MNE105` on the signature alone); a 65-literal adds `MNE183` (no
+  expected type) + `MNE102` (unbound name) cascades, and indexing adds
+  `MNE186`. Bisected: `[i64; 64]` is fully clean, `[i64; 65]` fails, so
+  64 is the exact ceiling. Both nesting levels of a nested sequence must
+  independently respect it (FB64 = 64 rows of 64 sits exactly at it).
+- **Minimal reproducer**: `language/mncs/pressure/rejected/n0018.mncs`
+  (`MNE105` + `MNE186` cascade); passing side pinned by
+  `pressure-pins#nest8x8` (8×8 nested fill, exact checksum) and the
+  `image-large` / `render-ppm` corpora.
+- **Targets affected**: all (frontend rejection).
+- **Correctness impact**: unsupported (hard elaboration error).
+- **Cost impact**: every frame wider than 64 lanes must nest; larger
+  frames pay an extra indirection level per dimension by construction.
+- **Owner repository**: `mncs-language` (bounded-sequence ceiling).
+- **Evidence**: `source-study` diagnostics quoted in
+  `pressure/rejected/README.md`; 64-clean / 65-rejected bisect.
+- **Status**: open (engine side worked around with nested records).
+
+### ENG-PRESSURE-0019 — records cannot be generic (MNP123); generic functions need explicit args (MNE220)
+
+- **Area**: language syntax + generics (record declarations; generic
+  application).
+- **Workload**: `engine.image.generic` (Nat-generic buffers),
+  `engine.image.large` (`grow_fill<W: Nat>`, `grow_count<W: Nat>`).
+- **Desired MNCS expression**: `record Box<T: Nat> { vals: [i64; T] }`
+  and inferred `grow_fill(base, 7)` at `W = 8`.
+- **Observed limitation**: a generic record header is rejected at parse
+  (`MNP123` + `MNP127`/`MNP128`/`MNP007` cascades) — generics exist only
+  on functions. Generic functions elaborate, but calls without explicit
+  arguments fail (`MNE220`: inference is not available in this tranche),
+  so every call site spells `grow_fill<8>(base, 7)`.
+- **Minimal reproducer**: `language/mncs/pressure/rejected/n0019.mncs`
+  (`MNP123` family); passing side pinned by `pressure-pins#fill8`
+  (explicit-args generic fill, exact checksum).
+- **Targets affected**: all (frontend rejection).
+- **Correctness impact**: unsupported (hard parse/elaboration errors).
+- **Cost impact**: concrete record per width (`FB32`, `FB64`, …) with
+  Nat-generic row algorithms shared across them; explicit `<N>` at every
+  generic call site.
+- **Owner repository**: `mncs-language` (generic records; argument
+  inference).
+- **Evidence**: `source-study` diagnostics quoted in
+  `pressure/rejected/README.md`.
+- **Status**: open (engine side worked around with Nat-generic functions
+  over flat buffers + concrete record wrappers).
+
+### ENG-PRESSURE-0020 — repeat literals `[v; N]` are not expressible (MNP157)
+
+- **Area**: language syntax (sequence literals).
+- **Workload**: every zeroed/cleared buffer (`blank16`, PPM headers,
+  `shapes_fill.blank8x8`).
+- **Desired MNCS expression**: `let r: [i64; 8] = [7; 8];`.
+- **Observed limitation**: the repeat form is rejected at parse
+  (`MNP157` + `MNP061` desync cascade). All elements must be spelled out
+  or produced by a fill loop.
+- **Minimal reproducer**: `language/mncs/pressure/rejected/n0020.mncs`
+  (`MNP157` family); passing side pinned by `pressure-pins#fill8`.
+- **Targets affected**: all (frontend rejection).
+- **Correctness impact**: unsupported (hard parse error).
+- **Cost impact**: fully-spelled literals (noisy at 16–64 lanes) or a
+  runtime fill loop where a constant would do.
+- **Owner repository**: `mncs-language` (repeat-literal syntax).
+- **Evidence**: `source-study` diagnostics quoted in
+  `pressure/rejected/README.md`.
+- **Status**: open (engine side works around with explicit literals and
+  `grow_fill<N>` loops).
+
+### ENG-PRESSURE-0021 — rebinding a name in the same scope is rejected (MNE110)
+
+- **Area**: language semantics (lexical binding).
+- **Workload**: every multi-step update (clip interpolants, raster edge
+  walks, `shapes_fill.probe_rebind`).
+- **Desired MNCS expression**: `let x: i64 = 1; let x: i64 = x + 1;`.
+- **Observed limitation**: the second binding fails (`MNE110`: binding is
+  ambiguous in this lexical scope) — there is no shadowing, so each
+  update step needs a fresh counter-suffixed name (`v0`, `v1`, `v2`, …).
+- **Minimal reproducer**: `language/mncs/pressure/rejected/n0021.mncs`
+  (single `MNE110`); passing side pinned by `pressure-pins#rebind`.
+- **Targets affected**: all (frontend rejection).
+- **Correctness impact**: unsupported (hard elaboration error).
+- **Cost impact**: counter-suffix naming discipline across all
+  multi-step computations; machine-generated code must thread fresh
+  names instead of rebinding.
+- **Owner repository**: `mncs-language` (shadowing or an explicit
+  rebinding form).
+- **Evidence**: `source-study` diagnostic quoted in
+  `pressure/rejected/README.md`.
+- **Status**: open (engine side works around with `v0`/`v1`/`v2`
+  suffixes throughout).
+
+### ENG-PRESSURE-0022 — `select` evaluates both arms: a guarded trap still traps
+
+- **Area**: language semantics (conditional evaluation).
+- **Workload**: `engine.raster.rasterizer.clip_t` (division by a possibly-
+  zero denominator), `engine.simulation.collision.resolve_pair`
+  (division by a possibly-zero distance).
+- **Desired MNCS expression**: `select(cond, safe, 1 / 0)` computing
+  `safe` when `cond` is true.
+- **Observed limitation**: `select` is strict — both arms evaluate before
+  selection. Minimized probe: `select(true, 7, boom())` with
+  `boom() = 1 / 0` fails at runtime (`integer div overflow`) on the
+  reference backend instead of returning 7. Every guarded division must
+  therefore be total on BOTH arms: the engine idiom is
+  `fx_div(n, select(d == 0, 1, d))` with the guard value exact wherever
+  the result is kept (clip: straddling implies nonzero; collision:
+  kept pairs have `d2 > 0`, floored through `safe_d2`), plus
+  statement-level `if` for whole-value choices.
+- **Minimal reproducer**: scratch transcript (not committed — a trapping
+  case fits neither `rejected/` (static) nor the pins net (expects
+  `returned`)): `press.seltest.probe_lazy` → `runtime_failure`, integer
+  div overflow. Committed workaround instances: `clip_t`,
+  `resolve_pair`, both pinned by their corpora.
+- **Targets affected**: confirmed on reference; code written for strict
+  also passes on lazy backends, so the risk is one-directional (writing
+  lazy-assuming code).
+- **Correctness impact**: unconditional runtime trap wherever a discarded
+  arm can trap — including self-pairs (`d2 = 0`) reached by exhaustive
+  pair loops.
+- **Cost impact**: guard-value reasoning at every conditionally-safe
+  division; no lazy conditional expression exists.
+- **Owner repository**: `mncs-language` (document `select` strictness or
+  provide a lazy conditional).
+- **Evidence**: `seltest` runtime-failure transcript; `rasterizer.mncs`
+  "select evaluates both sides" comment predates this entry.
+- **Status**: open (engine side works around with total-arms guards).
+
+### ENG-PRESSURE-0023 — `fx_narrow_trunc` rounds off-by-one for negative products (doc hazard)
+
+- **Area**: engine stdlib numerics (`engine.math.scalar` contract).
+- **Workload**: `engine.simulation.collision` impulse exchange
+  (`ix = fx_mul(rvn, nx)` with negative operands).
+- **Desired MNCS expression**: model `fx_mul(a, b)` as
+  trunc-toward-zero of `a * b / 65536`, per the "trunc" name.
+- **Observed limitation**: for a negative product with a nonzero
+  remainder the function returns truncation-toward-zero PLUS ONE —
+  neither trunc, floor, nor ceil. Observed on reference:
+  `fx_mul(-92690, 46345)` is `-65546`; trunc is `-65547` (true value
+  -65547.45). A trunc-based independent model matched spawn, detection,
+  normals, and positions, then diverged by exactly this one unit in
+  `lane0.vx` after pair resolution (`-10` MNCS vs `-11` model); modeling
+  the function exactly as written closed all 9 collision probes to
+  model-exact. Raw `/` itself truncates toward zero (per its comment and
+  all observations); only the narrow correction overshoots.
+- **Minimal reproducer**: `simulation-collision#lane0-vx-step4`
+  (`-60385`, pins a negative-product `fx_mul` chain end to end).
+- **Targets affected**: observed on reference; cross-backend uniformity
+  of negative narrowing is pending matrix evidence.
+- **Correctness impact**: none in-engine (implementation is self-
+  consistent and pinned), but any external model reading "trunc" at face
+  value silently mispredicts negative products by one.
+- **Cost impact**: modelers must replicate the quirk verbatim.
+- **Owner repository**: `mncs-engine` (documented at the source in
+  `scalar.mncs`; a rename or requantization belongs here, not upstream).
+- **Evidence**: `dbg-vx02` bisect transcript (`-10` vs `-11`);
+  `simulation-collision` 9/9 against the faithful model.
+- **Status**: open (documented; behavior pinned by the collision
+  corpus).
 
 ## Deliberately out of scope this run
 
