@@ -1,0 +1,143 @@
+mncs 0.10;
+
+// engine.scene.mesh — bounded indexed meshes with total fetch semantics.
+//
+// The canonical mesh is a unit cube (half-extent 1.0 in Q16.16) with 8
+// shared positions, per-vertex colors, 12 triangles over 36 indices, and 6
+// face normals. All fetch functions are total: out-of-range ids observe
+// fixed fallback values rather than traps, so a corrupt index buffer cannot
+// escape as a runtime failure (it renders as degenerate geometry instead).
+module engine.scene.mesh;
+
+use engine.math.scalar as s;
+use engine.math.mat4 as m4;
+use engine.math.vec3 as v3;
+use engine.math.vec4 as v4;
+
+fn cube_positions() -> (result: [v3.Vec3; 8]) {
+    let h: i64 = 65536;
+    let n: i64 = 0 - 65536;
+    return [
+        v3.Vec3 { x: n, y: n, z: n },
+        v3.Vec3 { x: h, y: n, z: n },
+        v3.Vec3 { x: h, y: h, z: n },
+        v3.Vec3 { x: n, y: h, z: n },
+        v3.Vec3 { x: n, y: n, z: h },
+        v3.Vec3 { x: h, y: n, z: h },
+        v3.Vec3 { x: h, y: h, z: h },
+        v3.Vec3 { x: n, y: h, z: h }
+    ];
+}
+
+fn cube_colors() -> (result: [v3.Vec3; 8]) {
+    let z: i64 = 0;
+    let f: i64 = 255;
+    return [
+        v3.Vec3 { x: f, y: z, z: z },
+        v3.Vec3 { x: z, y: f, z: z },
+        v3.Vec3 { x: z, y: z, z: f },
+        v3.Vec3 { x: f, y: f, z: z },
+        v3.Vec3 { x: f, y: z, z: f },
+        v3.Vec3 { x: z, y: f, z: f },
+        v3.Vec3 { x: f, y: f, z: f },
+        v3.Vec3 { x: f, y: z, z: z }
+    ];
+}
+
+// 12 outward triangles wound counter-clockwise in y-down screen space (the
+// rasterizer keeps positive screen-space area as front). Verified empirically
+// by the face-visibility probes: the +z face must read red at angle 0.
+fn cube_indices() -> (result: [i64; 36]) {
+    return [
+        4, 6, 5, 4, 7, 6,
+        1, 3, 0, 1, 2, 3,
+        5, 2, 1, 5, 6, 2,
+        0, 7, 4, 0, 3, 7,
+        7, 2, 6, 7, 3, 2,
+        0, 5, 1, 0, 4, 5
+    ];
+}
+
+fn cube_face_normals() -> (result: [v3.Vec3; 6]) {
+    let z: i64 = 0;
+    let h: i64 = 65536;
+    let n: i64 = 0 - 65536;
+    return [
+        v3.Vec3 { x: z, y: z, z: h },
+        v3.Vec3 { x: z, y: z, z: n },
+        v3.Vec3 { x: h, y: z, z: z },
+        v3.Vec3 { x: n, y: z, z: z },
+        v3.Vec3 { x: z, y: h, z: z },
+        v3.Vec3 { x: z, y: n, z: z }
+    ];
+}
+
+// Solid per-face debug colors, opaque packed RGBA:
+// front red, back green, left blue, right yellow, top white, bottom magenta.
+fn cube_face_colors() -> (result: [i64; 6]) {
+    return [4278190335, 16711935, 65535, 4294967040, 4294967295, 4278255615];
+}
+
+fn cube_pos(i: u64) -> (result: v3.Vec3) {
+    let ps: [v3.Vec3; 8] = cube_positions();
+    if i < 8 {
+        return ps[i];
+    }
+    return v3.Vec3 { x: 0, y: 0, z: 0 };
+}
+
+fn cube_col(i: u64) -> (result: v3.Vec3) {
+    let cs: [v3.Vec3; 8] = cube_colors();
+    if i < 8 {
+        return cs[i];
+    }
+    return v3.Vec3 { x: 0, y: 0, z: 0 };
+}
+
+fn cube_idx(k: i64) -> (result: i64) {
+    let ix: [i64; 36] = cube_indices();
+    if ((k >= 0) && (k < 36)) {
+        return ix[k as u64];
+    }
+    return 0;
+}
+
+// Triangle t (0..11) vertex slot k (0..2) -> position id, total.
+fn cube_tri_pos_id(t: i64, k: i64) -> (result: i64) {
+    return cube_idx((t *% 3) +% k);
+}
+
+fn cube_face_normal(f: u64) -> (result: v3.Vec3) {
+    let ns: [v3.Vec3; 6] = cube_face_normals();
+    if f < 6 {
+        return ns[f];
+    }
+    return v3.Vec3 { x: 0, y: 0, z: 65536 };
+}
+
+fn cube_face_color(f: u64) -> (result: i64) {
+    let cs: [i64; 6] = cube_face_colors();
+    if f < 6 {
+        return cs[f];
+    }
+    return 255;
+}
+
+// Transform one position by a Q16.16 matrix (point, w = 1).
+fn mesh_transform_pos(m: [i64; 16], p: v3.Vec3) -> (result: v4.Vec4) {
+    return m4.m4_transform_point(m, p);
+}
+
+// ---- Scalar boundary probes ----
+
+fn cube_index_count() -> (result: i64) {
+    let ix: [i64; 36] = cube_indices();
+    iterate i over ix carrying hits: i64 = 0 {
+        next hits = hits +% ((ix[i] < 8) as i64);
+    }
+    return hits;
+}
+
+fn tri_pos_id_vals(t: i64, k: i64) -> (result: i64) {
+    return cube_tri_pos_id(t, k);
+}

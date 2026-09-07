@@ -1,0 +1,8 @@
+mncs 0.10;
+
+// KNOWN-FAILING reproducer for ENG-PRESSURE-0005: i64 arithmetic shift.
+// See language/mncs/pressure/rejected/README.md; do not "fix" this file.
+module pressure.rejected.n0005;
+fn probe(x: i64) -> (result: i64) {
+    return x >> 1;
+}

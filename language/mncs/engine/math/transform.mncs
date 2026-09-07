@@ -1,0 +1,154 @@
+mncs 0.10;
+
+// engine.math.transform — model-space transform constructors and projection
+// matrices over Q16.16. All angles are integer degrees; all lengths are
+// Q16.16 unless a name says otherwise.
+module engine.math.transform;
+
+use engine.math.scalar as s;
+use engine.math.mat4 as m4;
+
+fn m4_translate(tx: i64, ty: i64, tz: i64) -> (result: [i64; 16]) {
+    let one: i64 = 65536;
+    let z: i64 = 0;
+    return [one, z, z, tx, z, one, z, ty, z, z, one, tz, z, z, z, one];
+}
+
+fn m4_scale(sx: i64, sy: i64, sz: i64) -> (result: [i64; 16]) {
+    let one: i64 = 65536;
+    let z: i64 = 0;
+    return [sx, z, z, z, z, sy, z, z, z, z, sz, z, z, z, z, one];
+}
+
+fn m4_rot_x(deg: i64) -> (result: [i64; 16]) {
+    let one: i64 = 65536;
+    let z: i64 = 0;
+    let c: i64 = s.fx_cos_deg(deg);
+    let sn: i64 = s.fx_sin_deg(deg);
+    return [one, z, z, z, z, c, s.neg_wrap_i64(sn), z, z, sn, c, z, z, z, z, one];
+}
+
+fn m4_rot_y(deg: i64) -> (result: [i64; 16]) {
+    let one: i64 = 65536;
+    let z: i64 = 0;
+    let c: i64 = s.fx_cos_deg(deg);
+    let sn: i64 = s.fx_sin_deg(deg);
+    return [c, z, sn, z, z, one, z, z, s.neg_wrap_i64(sn), z, c, z, z, z, z, one];
+}
+
+fn m4_rot_z(deg: i64) -> (result: [i64; 16]) {
+    let one: i64 = 65536;
+    let z: i64 = 0;
+    let c: i64 = s.fx_cos_deg(deg);
+    let sn: i64 = s.fx_sin_deg(deg);
+    return [c, s.neg_wrap_i64(sn), z, z, sn, c, z, z, z, z, one, z, z, z, z, one];
+}
+
+// Enum payloads cannot carry bare sequences (see ENG-PRESSURE-0007), so the
+// validated matrix travels inside a same-module record wrapper.
+record ProjMat { m: [i64; 16] }
+
+enum Proj { Ok { p: ProjMat }, BadParams }
+
+// General frustum over Q16.16 bounds. Validates every denominator plus the
+// near/far ordering, so no checked-division failure is reachable from valid
+// or invalid inputs alike: invalid inputs yield BadParams as a value.
+fn frustum_fx(l: i64, r: i64, b: i64, t: i64, n: i64, f: i64) -> (result: Proj) {
+    let z: i64 = 0;
+    let rl: i64 = r -% l;
+    let tb: i64 = t -% b;
+    let fn_: i64 = f -% n;
+    let valid: bool = (((((rl != z) && (tb != z)) && (fn_ != z)) && (n > z)) && (f > n)) && (l < r);
+    if valid {
+    } else {
+        return Proj.BadParams;
+    }
+    let m00: i64 = s.fx_div(s.fx_mul(n, 131072), rl);
+    let m11: i64 = s.fx_div(s.fx_mul(n, 131072), tb);
+    let m02: i64 = s.fx_div(r +% l, rl);
+    let m12: i64 = s.fx_div(t +% b, tb);
+    let m22: i64 = s.neg_wrap_i64(s.fx_div(f +% n, fn_));
+    let m32: i64 = s.neg_wrap_i64(s.fx_div(s.fx_mul(f, n) +% s.fx_mul(f, n), fn_));
+    let m23: i64 = s.neg_wrap_i64(65536);
+    return Proj.Ok {
+        p: ProjMat { m: [m00, z, m02, z, z, m11, m12, z, z, z, m22, m32, z, z, m23, z] }
+    };
+}
+
+// Symmetric perspective from a vertical field of view in integer degrees.
+// The half-angle in half-degree units is exactly fov_deg, so no resolution
+// is lost before the sine table. aspect = aspect_num / aspect_den.
+fn perspective_fov(fov_deg: i64, aspect_num: i64, aspect_den: i64, near: i64, far: i64) -> (result: Proj) {
+    let z: i64 = 0;
+    let c: i64 = s.fx_cos_halfdeg(fov_deg);
+    if c == z {
+        return Proj.BadParams;
+    }
+    if aspect_den == z {
+        return Proj.BadParams;
+    }
+    let tan_half: i64 = s.fx_div(s.fx_sin_halfdeg(fov_deg), c);
+    let top: i64 = s.fx_mul(near, tan_half);
+    let right: i64 = s.fx_div(s.fx_mul(top, s.fx_from_int(aspect_num)), s.fx_from_int(aspect_den));
+    return frustum_fx(s.neg_wrap_i64(right), right, s.neg_wrap_i64(top), top, near, far);
+}
+
+// Symmetric orthographic projection over Q16.16 bounds.
+fn ortho_fx(l: i64, r: i64, b: i64, t: i64, n: i64, f: i64) -> (result: Proj) {
+    let z: i64 = 0;
+    let rl: i64 = r -% l;
+    let tb: i64 = t -% b;
+    let fn_: i64 = f -% n;
+    let valid: bool = (((rl != z) && (tb != z)) && (fn_ != z)) && (l < r);
+    if valid {
+    } else {
+        return Proj.BadParams;
+    }
+    let m00: i64 = s.fx_div(131072, rl);
+    let m11: i64 = s.fx_div(131072, tb);
+    let m22: i64 = s.neg_wrap_i64(s.fx_div(131072, fn_));
+    let m03: i64 = s.neg_wrap_i64(s.fx_div(r +% l, rl));
+    let m13: i64 = s.neg_wrap_i64(s.fx_div(t +% b, tb));
+    let m23: i64 = s.neg_wrap_i64(s.fx_div(f +% n, fn_));
+    let one: i64 = 65536;
+    return Proj.Ok {
+        p: ProjMat { m: [m00, z, z, m03, z, m11, z, m13, z, z, m22, m23, z, z, z, one] }
+    };
+}
+
+// ---- Scalar boundary probes ----
+
+fn rot_z_entry(deg: i64, r: u64, c: u64) -> (result: i64) {
+    return m4.m4_get(m4_rot_z(deg), r, c);
+}
+
+fn rot_x_entry(deg: i64, r: u64, c: u64) -> (result: i64) {
+    return m4.m4_get(m4_rot_x(deg), r, c);
+}
+
+fn translate_entry(tx: i64, ty: i64, tz: i64, r: u64, c: u64) -> (result: i64) {
+    return m4.m4_get(m4_translate(tx, ty, tz), r, c);
+}
+
+// m00 of a 90-degree perspective with unit aspect and near=1, far=10, or 0
+// when the parameters are rejected.
+fn persp90_m00(aspect_num: i64, aspect_den: i64) -> (result: i64) {
+    return match perspective_fov(90, aspect_num, aspect_den, 65536, 655360) {
+        Proj.Ok { p } => p.m[0],
+        BadParams => 0,
+    };
+}
+
+fn persp_bad() -> (result: bool) {
+    return match perspective_fov(90, 1, 0, 65536, 655360) {
+        Proj.Ok { p } => false,
+        BadParams => true,
+    };
+}
+
+fn ortho_m00() -> (result: i64) {
+    return match ortho_fx(s.neg_wrap_i64(65536), 65536, s.neg_wrap_i64(65536), 65536, 65536, 655360) {
+        Proj.Ok { p } => p.m[0],
+        BadParams => 0,
+    };
+}

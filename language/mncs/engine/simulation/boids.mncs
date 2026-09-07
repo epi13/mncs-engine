@@ -1,0 +1,176 @@
+mncs 0.10;
+
+// engine.simulation.boids — fixed-pool flocking over particle lanes in
+// Q16.16.
+//
+// Each boid steers from an O(n^2) neighborhood fold: cohesion toward the
+// local centroid, alignment toward the local mean velocity, and separation
+// away from the centroid when crowded. There is no spatial index: uniform
+// grids or hash maps over lanes are not expressible with today's sequences
+// (see ENG-PRESSURE-0015), so neighborhoods cost n^2 distance tests. The
+// pool reuses engine.simulation.particles.Pool (16 lanes, SoA).
+//
+// All gains are Q16.16. Division by the neighbor count guards zero with a
+// selected 1-divisor (select evaluates both sides, so the guard must make
+// the discarded branch total too, not merely unselected).
+module engine.simulation.boids;
+
+use engine.math.scalar as s;
+use engine.simulation.particles as part;
+
+// Neighborhood accumulation for one lane.
+record NB { cx: i64, cy: i64, cvx: i64, cvy: i64, n: i64 }
+
+fn nb_zero() -> (result: NB) {
+    return NB { cx: 0, cy: 0, cvx: 0, cvy: 0, n: 0 };
+}
+
+fn nb_add(acc: NB, pool: part.Pool, i: u64, j: u64, r2: i64) -> (result: NB) {
+    let dx: i64 = pool.px[j] -% pool.px[i];
+    let dy: i64 = pool.py[j] -% pool.py[i];
+    let d2: i64 = (dx *% dx) +% (dy *% dy);
+    let near: bool = ((d2 < r2) && (d2 > 0)) && (i != j);
+    let one: i64 = select(near, 1, 0);
+    let zx: i64 = 0;
+    return NB {
+        cx: acc.cx +% select(near, pool.px[j], zx),
+        cy: acc.cy +% select(near, pool.py[j], zx),
+        cvx: acc.cvx +% select(near, pool.vx[j], zx),
+        cvy: acc.cvy +% select(near, pool.vy[j], zx),
+        n: acc.n +% one,
+    };
+}
+
+// Full neighborhood fold for lane i with squared radius r2 (raw Q16.16
+// units: positions are Q16.16 so dx*%dx is exact below 2^63).
+fn neighbors(pool: part.Pool, i: u64, r2: i64) -> (result: NB) {
+    iterate j over pool.px carrying acc: NB = nb_zero() {
+        next acc = nb_add(acc, pool, i, j, r2);
+    }
+    return acc;
+}
+
+// Steer lane i: cohesion + alignment + separation, then clamp speed to
+// vmax (raw Q16.16; the norm needs both axes, so clamping applies to the
+// steered pair in clamp_pair). A lone boid (n == 0) keeps its velocity.
+fn lane_speed2(vx: i64, vy: i64) -> (result: i64) {
+    return (vx *% vx) +% (vy *% vy);
+}
+
+// Steered velocity pair (distinct from part.Step1D, which is position +
+// velocity on one axis).
+record Vel { x: i64, y: i64 }
+
+// Full speed clamp applied to a steered velocity pair.
+fn clamp_pair(vx: i64, vy: i64, vmax: i64) -> (result: Vel) {
+    let sp2: i64 = lane_speed2(vx, vy);
+    let vmax2: i64 = vmax *% vmax;
+    if sp2 <= vmax2 {
+        return Vel { x: vx, y: vy };
+    }
+    let sp: i64 = s.isqrt_u64(sp2 as u64) as i64;
+    let k: i64 = s.fx_div(vmax, select(sp == 0, 1, sp));
+    return Vel { x: s.fx_mul(vx, k), y: s.fx_mul(vy, k) };
+}
+
+fn steer_lane(pool: part.Pool, i: u64, r2: i64, gain_c: i64, gain_a: i64, gain_s: i64, vmax: i64) -> (result: part.Step1D) {
+    let nb: NB = neighbors(pool, i, r2);
+    let alone: bool = nb.n == 0;
+    let nn: i64 = select(alone, 1, nb.n);
+    let mx: i64 = (nb.cx / nn) -% pool.px[i];
+    let my: i64 = (nb.cy / nn) -% pool.py[i];
+    let mvx: i64 = (nb.cvx / nn) -% pool.vx[i];
+    let mvy: i64 = (nb.cvy / nn) -% pool.vy[i];
+    let svx: i64 = pool.vx[i] +% ((s.fx_mul(mx, gain_c) +% s.fx_mul(mvx, gain_a)) -% s.fx_mul(mx, gain_s));
+    let svy: i64 = pool.vy[i] +% ((s.fx_mul(my, gain_c) +% s.fx_mul(mvy, gain_a)) -% s.fx_mul(my, gain_s));
+    let cl: Vel = clamp_pair(svx, svy, vmax);
+    return part.Step1D { p: select(alone, pool.vx[i], cl.x), v: select(alone, pool.vy[i], cl.y) };
+}
+
+// Default behavior: radius 4 units, gentle cohesion/alignment, stronger
+// separation, vmax 1 unit/step, unit dt, 16x16 arena, no gravity.
+fn boid_lane(pool: part.Pool, acc: part.Pool, i: u64) -> (result: part.Pool) {
+    // Squared radius 16 units^2 = (4 * 65536)^2; gains 0.05/0.05/0.15 in
+    // Q16.16; vmax 1 unit per step.
+    let sv: part.Step1D = steer_lane(pool, i, 68719476736, 3277, 3277, 9830, 65536);
+    let sx: part.Step1D = part.step_axis(pool.px[i], sv.p, 0, 65536, 1048576);
+    let sy: part.Step1D = part.step_axis(pool.py[i], sv.v, 0, 65536, 1048576);
+    return part.Pool {
+        px: replace(acc.px, i, sx.p),
+        py: replace(acc.py, i, sy.p),
+        vx: replace(acc.vx, i, sx.v),
+        vy: replace(acc.vy, i, sx.v),
+    };
+}
+
+fn step_flock(pool: part.Pool) -> (result: part.Pool) {
+    iterate i over pool.px carrying acc: part.Pool = pool {
+        next acc = boid_lane(pool, acc, i);
+    }
+    return acc;
+}
+
+fn flock2(pool: part.Pool) -> (result: part.Pool) {
+    return step_flock(step_flock(pool));
+}
+
+fn flock4(pool: part.Pool) -> (result: part.Pool) {
+    return flock2(flock2(pool));
+}
+
+fn flock8(pool: part.Pool) -> (result: part.Pool) {
+    return flock4(flock4(pool));
+}
+
+fn flock16(pool: part.Pool) -> (result: part.Pool) {
+    return flock8(flock8(pool));
+}
+
+// A scattered flock: spawn lanes with wider cross velocities so the
+// neighborhood fold sees interacting and lone boids in one frame.
+fn scatter_lane(pool: part.Pool, i: u64) -> (result: part.Pool) {
+    let k: i64 = i as i64;
+    return part.Pool {
+        px: replace(pool.px, i, (k *% 65536) +% 32768),
+        // (k * 5) % 16 permutes 0..15, so every lane starts inside the arena.
+        py: replace(pool.py, i, (((k *% 5) % 16) *% 65536) +% 32768),
+        vx: replace(pool.vx, i, ((k -% 8) *% 4096) +% 8192),
+        vy: replace(pool.vy, i, (((7 *% k) -% 24) *% 2048) +% 4096),
+    };
+}
+
+fn scatter() -> (result: part.Pool) {
+    let empty: [i64; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let p0: part.Pool = part.Pool { px: empty, py: empty, vx: empty, vy: empty };
+    iterate i over p0.px carrying acc: part.Pool = p0 {
+        next acc = scatter_lane(acc, i);
+    }
+    return acc;
+}
+
+// ---- Conformance probes ----
+
+fn probe_scatter_digest() -> (result: i64) {
+    return part.pool_digest(scatter());
+}
+
+fn probe_flock1_digest() -> (result: i64) {
+    return part.pool_digest(step_flock(scatter()));
+}
+
+fn probe_flock8_digest() -> (result: i64) {
+    return part.pool_digest(flock8(scatter()));
+}
+
+fn probe_flock16_digest() -> (result: i64) {
+    return part.pool_digest(flock16(scatter()));
+}
+
+fn probe_flock16_energy() -> (result: i64) {
+    return part.speed_sum(flock16(scatter()));
+}
+
+fn probe_flock16_lane3() -> (result: i64) {
+    let p: part.Pool = flock16(scatter());
+    return p.px[3];
+}

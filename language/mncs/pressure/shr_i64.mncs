@@ -1,0 +1,15 @@
+mncs 0.10;
+
+// Minimized reproducer for ENG-PRESSURE-0005: i64 `>>` cannot pass body
+// validation (shift-count literals elaborate as u64 while the checker
+// demands the count match the value type), so exact halving must be
+// spelled as division. Rejected form: `return x >> 1;`
+module pressure.shr_i64;
+
+fn probe_half(x: i64) -> (result: i64) {
+    return x / 2;
+}
+
+fn probe_half_val() -> (result: i64) {
+    return probe_half(100);
+}

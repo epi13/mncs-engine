@@ -1,0 +1,339 @@
+mncs 0.10;
+
+// engine.raster.rasterizer — reference software triangle rasterizer over
+// FB16 with a Q16.16 NDC depth buffer.
+//
+// Coordinate contract: input vertices are screen-space integers (post-
+// viewport) with NDC z in Q16.16, vertex colors 0..255, texture coordinates
+// in Q16.16, and clip-w in Q16.16. Front faces are counter-clockwise in
+// screen space (y down); clockwise and degenerate triangles are dropped.
+// Vertices with w <= 0 drop the triangle: there is no frustum clipping yet,
+// only this guard (see ENG-PRESSURE-0012). Depth tests NDC z (smaller wins);
+// the clear value 131072 (2.0) exceeds any visible fragment.
+//
+// This module is the rendering correctness oracle (RFC 0002): accelerated
+// paths are judged against its outputs, not against screenshots.
+module engine.raster.rasterizer;
+
+use engine.math.scalar as s;
+use engine.math.vec2 as vec2;
+use engine.image.color as color;
+use engine.image.framebuffer as fb;
+use engine.math.geometry as geo;
+
+// Screen-space vertex: integer pixels, Q16.16 depth/uv/w, integer colors.
+record SVert { x: i64, y: i64, z: i64, r: i64, g: i64, b: i64, u: i64, v: i64, w: i64 }
+
+record Depth16 { rows: [[i64; 16]; 16] }
+
+record RastFrame { fb: fb.FB16, zb: Depth16 }
+
+record ScreenPt { x: i64, y: i64 }
+
+record EdgeW { e0: i64, e1: i64, e2: i64 }
+
+fn depth_blank() -> (result: Depth16) {
+    let row: [i64; 16] = depth_row_blank();
+    return Depth16 { rows: [row, row, row, row, row, row, row, row, row, row, row, row, row, row, row, row] };
+}
+
+fn depth_row_blank() -> (result: [i64; 16]) {
+    let base: [i64; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    iterate i over base carrying row: [i64; 16] = base {
+        next row = replace(row, i, 131072);
+    }
+    return row;
+}
+
+fn depth_get(zb: Depth16, r: u64, c: u64) -> (result: i64) {
+    if ((r < 16) && (c < 16)) {
+        return zb.rows[r][c];
+    }
+    return 131072;
+}
+
+fn depth_set(zb: Depth16, r: u64, c: u64, value: i64) -> (result: Depth16) {
+    if ((r < 16) && (c < 16)) {
+        return Depth16 { rows: replace(zb.rows, r, replace(zb.rows[r], c, value)) };
+    }
+    return zb;
+}
+
+// NDC (-1..1 Q16.16) to 16x16 screen pixels. x maps -1->0, 1->15; y is
+// flipped so +1 (up) maps to row 0. Inputs outside -1..1 map outside 0..15
+// and are absorbed downstream by total framebuffer writes.
+fn viewport(ndc_x: i64, ndc_y: i64) -> (result: ScreenPt) {
+    let sx: i64 = ((ndc_x +% 65536) *% 15) / 131072;
+    let sy: i64 = ((65536 -% ndc_y) *% 15) / 131072;
+    return ScreenPt { x: sx, y: sy };
+}
+
+// Twice the signed screen-space area (positive = CCW = front).
+fn tri_area2v(v0: SVert, v1: SVert, v2: SVert) -> (result: i64) {
+    return geo.orient2d(
+        vec2.Vec2 { x: v0.x, y: v0.y },
+        vec2.Vec2 { x: v1.x, y: v1.y },
+        vec2.Vec2 { x: v2.x, y: v2.y }
+    );
+}
+
+// Edge functions of pixel p (exact integers under the orient2d contract).
+fn tri_edges(v0: SVert, v1: SVert, v2: SVert, px: i64, py: i64) -> (result: EdgeW) {
+    let p: vec2.Vec2 = vec2.Vec2 { x: px, y: py };
+    let a: vec2.Vec2 = vec2.Vec2 { x: v0.x, y: v0.y };
+    let b: vec2.Vec2 = vec2.Vec2 { x: v1.x, y: v1.y };
+    let c: vec2.Vec2 = vec2.Vec2 { x: v2.x, y: v2.y };
+    return EdgeW { e0: geo.orient2d(b, c, p), e1: geo.orient2d(c, a, p), e2: geo.orient2d(a, b, p) };
+}
+
+// Inside test consistent with the area sign: boundary-inclusive on all
+// edges, correct for the CCW triangles this rasterizer accepts.
+fn edges_inside_ccw(e: EdgeW) -> (result: bool) {
+    let z: i64 = 0;
+    return ((e.e0 >= z) && (e.e1 >= z)) && (e.e2 >= z);
+}
+
+// Q16.16 interpolation of one attribute from edge functions over a positive
+// area: w_i = E_i / area, attr = w0*a0 + w1*a1 + w2*a2 with attr lanes in
+// Q16.16. Area must be positive (checked by callers).
+fn interp_attr(e: EdgeW, area_fx: i64, a0: i64, a1: i64, a2: i64) -> (result: i64) {
+    let w0: i64 = s.fx_div(s.fx_from_int(e.e0), area_fx);
+    let w1: i64 = s.fx_div(s.fx_from_int(e.e1), area_fx);
+    let w2: i64 = s.fx_div(s.fx_from_int(e.e2), area_fx);
+    return ((s.fx_mul(w0, a0) +% s.fx_mul(w1, a1)) +% s.fx_mul(w2, a2));
+}
+
+// Clamp texture coordinate to the 0..65535 range (edge clamp, total).
+fn clamp_uv(t: i64) -> (result: i64) {
+    return s.clamp_i64(t, 0, 65535);
+}
+
+// Nearest-neighbor texture sample with edge clamping.
+fn sample_tex_clamp(tex: fb.FB16, u: i64, v: i64) -> (result: i64) {
+    let cu: i64 = clamp_uv(u);
+    let cv: i64 = clamp_uv(v);
+    let c: u64 = ((cu *% 16) / 65536) as u64;
+    let r: u64 = ((cv *% 16) / 65536) as u64;
+    return fb.get16(tex, r, c);
+}
+
+record TriSetup {
+    area: i64, area_fx: i64,
+    minx: i64, maxx: i64, miny: i64, maxy: i64,
+    v0: SVert, v1: SVert, v2: SVert,
+    color: i64, tex: fb.FB16, mode: u64
+}
+
+fn tri_setup(v0: SVert, v1: SVert, v2: SVert, color: i64, tex: fb.FB16, mode: u64) -> (result: TriSetup) {
+    let area: i64 = tri_area2v(v0, v1, v2);
+    return TriSetup {
+        area: area, area_fx: s.fx_from_int(area),
+        minx: s.min_i64(s.min_i64(v0.x, v1.x), v2.x),
+        maxx: s.max_i64(s.max_i64(v0.x, v1.x), v2.x),
+        miny: s.min_i64(s.min_i64(v0.y, v1.y), v2.y),
+        maxy: s.max_i64(s.max_i64(v0.y, v1.y), v2.y),
+        v0: v0, v1: v1, v2: v2, color: color, tex: tex, mode: mode
+    };
+}
+
+// Shade one pixel: returns the updated frame. Modes: 0 = flat color,
+// 1 = interpolated vertex color, 2 = perspective-correct textured.
+fn shade_pixel(frame: RastFrame, setup: TriSetup, r: u64, c: u64) -> (result: RastFrame) {
+    let px: i64 = c as i64;
+    let py: i64 = r as i64;
+    let in_box: bool = ((((px >= setup.minx) && (px <= setup.maxx)) && (py >= setup.miny)) && (py <= setup.maxy));
+    if in_box {
+    } else {
+        return frame;
+    }
+    let e: EdgeW = tri_edges(setup.v0, setup.v1, setup.v2, px, py);
+    if edges_inside_ccw(e) {
+    } else {
+        return frame;
+    }
+    let z: i64 = interp_attr(e, setup.area_fx, setup.v0.z, setup.v1.z, setup.v2.z);
+    // Strict less-than: equal-depth fragments keep the earlier write. Along
+    // a shared edge of two coplanar triangles the first triangle wins every
+    // pixel (verified by probe_depth_red_gone: the top row stays red).
+    if z < depth_get(frame.zb, r, c) {
+    } else {
+        return frame;
+    }
+    let frag: i64 = fragment_color(setup, e, r, c);
+    let nfb: fb.FB16 = fb.set16_rc(frame.fb, r, c, frag);
+    return RastFrame { fb: nfb, zb: depth_set(frame.zb, r, c, z) };
+}
+
+fn fragment_color(setup: TriSetup, e: EdgeW, r: u64, c: u64) -> (result: i64) {
+    if setup.mode == 2 {
+        // Perspective-correct path: interpolate u/w, v/w, 1/w linearly,
+        // then divide. w > 0 is established by the caller's guard.
+        let oow0: i64 = s.fx_div(65536, setup.v0.w);
+        let oow1: i64 = s.fx_div(65536, setup.v1.w);
+        let oow2: i64 = s.fx_div(65536, setup.v2.w);
+        let uw: i64 = interp_attr(e, setup.area_fx, s.fx_mul(setup.v0.u, oow0), s.fx_mul(setup.v1.u, oow1), s.fx_mul(setup.v2.u, oow2));
+        let vw: i64 = interp_attr(e, setup.area_fx, s.fx_mul(setup.v0.v, oow0), s.fx_mul(setup.v1.v, oow1), s.fx_mul(setup.v2.v, oow2));
+        let oow: i64 = interp_attr(e, setup.area_fx, oow0, oow1, oow2);
+        let u: i64 = s.fx_div(uw, oow);
+        let v: i64 = s.fx_div(vw, oow);
+        return sample_tex_clamp(setup.tex, u, v);
+    }
+    if setup.mode == 1 {
+        let rc: i64 = interp_attr(e, setup.area_fx, s.fx_from_int(setup.v0.r), s.fx_from_int(setup.v1.r), s.fx_from_int(setup.v2.r));
+        let gc: i64 = interp_attr(e, setup.area_fx, s.fx_from_int(setup.v0.g), s.fx_from_int(setup.v1.g), s.fx_from_int(setup.v2.g));
+        let bc: i64 = interp_attr(e, setup.area_fx, s.fx_from_int(setup.v0.b), s.fx_from_int(setup.v1.b), s.fx_from_int(setup.v2.b));
+        return color.pack_rgba(s.fx_narrow_trunc(rc), s.fx_narrow_trunc(gc), s.fx_narrow_trunc(bc), 255);
+    }
+    return setup.color;
+}
+
+// One raster row: the row itself is the column domain (its values are
+// unused; the traversal binding supplies the column index).
+fn raster_row(frame: RastFrame, setup: TriSetup, r: u64) -> (result: RastFrame) {
+    let row: [i64; 16] = fb.row16(frame.fb, r);
+    iterate c over row carrying acc: RastFrame = frame {
+        next acc = shade_pixel(acc, setup, r, c);
+    }
+    return acc;
+}
+
+fn raster_rows(frame: RastFrame, setup: TriSetup) -> (result: RastFrame) {
+    iterate r over frame.fb.rows carrying acc: RastFrame = frame {
+        next acc = raster_row(acc, setup, r);
+    }
+    return acc;
+}
+
+// Shared entry: drops clockwise/degenerate triangles (area <= 0, so no
+// division by zero is reachable) and triangles with any w <= 0 (no frustum
+// clipping yet — the guard is the documented approximation).
+fn raster_guard(frame: RastFrame, setup: TriSetup) -> (result: RastFrame) {
+    if setup.area <= 0 {
+        return frame;
+    }
+    let w_ok: bool = ((setup.v0.w > 0) && (setup.v1.w > 0)) && (setup.v2.w > 0);
+    if w_ok {
+        return raster_rows(frame, setup);
+    }
+    return frame;
+}
+
+fn rasterize_flat(frame: RastFrame, v0: SVert, v1: SVert, v2: SVert, color: i64) -> (result: RastFrame) {
+    let blank_tex: fb.FB16 = fb.blank16(0);
+    return raster_guard(frame, tri_setup(v0, v1, v2, color, blank_tex, 0));
+}
+
+fn rasterize_smooth(frame: RastFrame, v0: SVert, v1: SVert, v2: SVert) -> (result: RastFrame) {
+    let blank_tex: fb.FB16 = fb.blank16(0);
+    return raster_guard(frame, tri_setup(v0, v1, v2, 0, blank_tex, 1));
+}
+
+fn rasterize_textured(frame: RastFrame, v0: SVert, v1: SVert, v2: SVert, tex: fb.FB16) -> (result: RastFrame) {
+    return raster_guard(frame, tri_setup(v0, v1, v2, 0, tex, 2));
+}
+
+fn empty_frame() -> (result: RastFrame) {
+    return RastFrame { fb: fb.blank16(255), zb: depth_blank() };
+}
+
+// ---- Conformance probes (checksums baked from the reference backend) ----
+
+fn probe_flat() -> (result: i64) {
+    let f0: RastFrame = empty_frame();
+    let f1: RastFrame = rasterize_flat(f0, tri_v0(), tri_v1(), tri_v2(), 4294967295);
+    return fb.checksum16(f1.fb);
+}
+
+fn probe_depth() -> (result: i64) {
+    let f0: RastFrame = empty_frame();
+    let back: RastFrame = rasterize_flat(f0, tri_v0(), tri_v1(), tri_v2(), 4278190335);
+    let front: RastFrame = rasterize_flat(back, tri_v0(), tri_v1(), tri_v2_near(), 16711935);
+    return fb.checksum16(front.fb);
+}
+
+fn probe_smooth() -> (result: i64) {
+    let f0: RastFrame = empty_frame();
+    let f1: RastFrame = rasterize_smooth(f0, rgb_v0(), rgb_v1(), rgb_v2());
+    return fb.checksum16(f1.fb);
+}
+
+fn probe_textured() -> (result: i64) {
+    let f0: RastFrame = empty_frame();
+    let tex: fb.FB16 = fb.blank16(4278190335);
+    let f1: RastFrame = rasterize_textured(f0, uv_v0(), uv_v1(), uv_v2(), tex);
+    return fb.checksum16(f1.fb);
+}
+
+fn probe_cull() -> (result: i64) {
+    let f0: RastFrame = empty_frame();
+    let f1: RastFrame = rasterize_flat(f0, tri_v2(), tri_v1(), tri_v0(), 4294967295);
+    return fb.checksum16(f1.fb);
+}
+
+fn probe_wzero() -> (result: i64) {
+    let f0: RastFrame = empty_frame();
+    let bad: SVert = SVert { x: 2, y: 2, z: 0, r: 0, g: 0, b: 0, u: 0, v: 0, w: 0 };
+    let f1: RastFrame = rasterize_flat(f0, bad, tri_v1(), tri_v2(), 4294967295);
+    return fb.checksum16(f1.fb);
+}
+
+fn probe_flat_count() -> (result: i64) {
+    let f0: RastFrame = empty_frame();
+    let f1: RastFrame = rasterize_flat(f0, tri_v0(), tri_v1(), tri_v2(), 4294967295);
+    return fb.fb16_count(f1.fb, 4294967295);
+}
+
+fn probe_depth_green_count() -> (result: i64) {
+    let f0: RastFrame = empty_frame();
+    let back: RastFrame = rasterize_flat(f0, tri_v0(), tri_v1(), tri_v2(), 4278190335);
+    let front: RastFrame = rasterize_flat(back, tri_v0(), tri_v1(), tri_v2_near(), 16711935);
+    return fb.fb16_count(front.fb, 16711935);
+}
+
+fn probe_depth_red_gone() -> (result: i64) {
+    let f0: RastFrame = empty_frame();
+    let back: RastFrame = rasterize_flat(f0, tri_v0(), tri_v1(), tri_v2(), 4278190335);
+    let front: RastFrame = rasterize_flat(back, tri_v0(), tri_v1(), tri_v2_near(), 16711935);
+    return fb.fb16_count(front.fb, 4278190335);
+}
+
+// Canonical test triangle (CCW, covers x+y <= 15): depths 0 for flat.
+fn tri_v0() -> (result: SVert) {
+    return SVert { x: 0, y: 0, z: 0, r: 0, g: 0, b: 0, u: 0, v: 0, w: 65536 };
+}
+
+fn tri_v1() -> (result: SVert) {
+    return SVert { x: 15, y: 0, z: 0, r: 0, g: 0, b: 0, u: 65536, v: 0, w: 65536 };
+}
+
+fn tri_v2() -> (result: SVert) {
+    return SVert { x: 0, y: 15, z: 0, r: 0, g: 0, b: 0, u: 0, v: 65536, w: 65536 };
+}
+
+fn tri_v2_near() -> (result: SVert) {
+    return SVert { x: 0, y: 15, z: 0 - 32768, r: 0, g: 0, b: 0, u: 0, v: 65536, w: 65536 };
+}
+
+fn rgb_v0() -> (result: SVert) {
+    return SVert { x: 0, y: 0, z: 0, r: 255, g: 0, b: 0, u: 0, v: 0, w: 65536 };
+}
+
+fn rgb_v1() -> (result: SVert) {
+    return SVert { x: 15, y: 0, z: 0, r: 0, g: 255, b: 0, u: 65536, v: 0, w: 65536 };
+}
+
+fn rgb_v2() -> (result: SVert) {
+    return SVert { x: 0, y: 15, z: 0, r: 0, g: 0, b: 255, u: 0, v: 65536, w: 65536 };
+}
+
+fn uv_v0() -> (result: SVert) {
+    return rgb_v0();
+}
+
+fn uv_v1() -> (result: SVert) {
+    return rgb_v1();
+}
+
+fn uv_v2() -> (result: SVert) {
+    return rgb_v2();
+}

@@ -1,0 +1,13 @@
+mncs 0.10;
+
+// KNOWN-FAILING reproducer for ENG-PRESSURE-0011: passing a bare nested
+// sequence to a cross-module function.
+// See language/mncs/pressure/rejected/README.md; do not "fix" this file.
+module pressure.rejected.n0011a;
+
+use pressure.rejected.n0011lib as lib;
+
+fn probe() -> (result: i64) {
+    let grid: [[i64; 2]; 2] = [[1, 2], [3, 4]];
+    return lib.read_cell(grid, 1, 1);
+}

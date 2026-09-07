@@ -1,0 +1,13 @@
+mncs 0.10;
+
+// KNOWN-FAILING reproducer for ENG-PRESSURE-0011: receiving a bare nested
+// sequence from a cross-module function.
+// See language/mncs/pressure/rejected/README.md; do not "fix" this file.
+module pressure.rejected.n0011b;
+
+use pressure.rejected.n0011lib as lib;
+
+fn probe() -> (result: i64) {
+    let grid: [[i64; 2]; 2] = lib.make_grid();
+    return grid[1][1];
+}

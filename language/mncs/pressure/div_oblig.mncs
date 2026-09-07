@@ -1,0 +1,15 @@
+mncs 0.10;
+
+// Minimized reproducer for ENG-PRESSURE-0008: division by a nonzero literal
+// is runtime-total, but the checked-division obligation stays UNKNOWN until
+// a prover discharges literal-divisor facts. See the compilation-study
+// `unresolved_obligations` for this module.
+module pressure.div_oblig;
+
+fn probe_div_literal() -> (result: i64) {
+    return 255 / 255;
+}
+
+fn probe_channel_lerp() -> (result: i64) {
+    return ((200 *% 55) +% (100 *% 200)) / 255;
+}

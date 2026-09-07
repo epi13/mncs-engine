@@ -1,0 +1,118 @@
+mncs 0.10;
+
+// engine.math.vec4 — homogeneous 4D vectors. Lanes are i64 (integers) or
+// Q16.16 inside `fx_*` functions, following the vec2 unit discipline.
+module engine.math.vec4;
+
+use engine.math.scalar as s;
+use engine.math.vec3 as v3;
+
+record Vec4 { x: i64, y: i64, z: i64, w: i64 }
+
+fn vec4(x: i64, y: i64, z: i64, w: i64) -> (result: Vec4) {
+    return Vec4 { x: x, y: y, z: z, w: w };
+}
+
+fn vec4_zero() -> (result: Vec4) {
+    return Vec4 { x: 0, y: 0, z: 0, w: 0 };
+}
+
+fn vec4_add(a: Vec4, b: Vec4) -> (result: Vec4) {
+    return Vec4 { x: a.x +% b.x, y: a.y +% b.y, z: a.z +% b.z, w: a.w +% b.w };
+}
+
+fn vec4_sub(a: Vec4, b: Vec4) -> (result: Vec4) {
+    return Vec4 { x: a.x -% b.x, y: a.y -% b.y, z: a.z -% b.z, w: a.w -% b.w };
+}
+
+fn vec4_scale(v: Vec4, k: i64) -> (result: Vec4) {
+    return Vec4 { x: v.x *% k, y: v.y *% k, z: v.z *% k, w: v.w *% k };
+}
+
+fn vec4_dot(a: Vec4, b: Vec4) -> (result: i64) {
+    return ((a.x *% b.x) +% (a.y *% b.y)) +% ((a.z *% b.z) +% (a.w *% b.w));
+}
+
+fn vec4_equal(a: Vec4, b: Vec4) -> (result: bool) {
+    return (((a.x == b.x) && (a.y == b.y)) && (a.z == b.z)) && (a.w == b.w);
+}
+
+fn vec4_fx_scale(v: Vec4, k: i64) -> (result: Vec4) {
+    return Vec4 { x: s.fx_mul(v.x, k), y: s.fx_mul(v.y, k), z: s.fx_mul(v.z, k), w: s.fx_mul(v.w, k) };
+}
+
+fn vec4_fx_dot(a: Vec4, b: Vec4) -> (result: i64) {
+    return ((s.fx_mul(a.x, b.x) +% s.fx_mul(a.y, b.y)) +% s.fx_mul(a.z, b.z)) +% s.fx_mul(a.w, b.w);
+}
+
+fn vec4_fx_lerp(a: Vec4, b: Vec4, t: i64) -> (result: Vec4) {
+    return Vec4 {
+        x: s.fx_lerp(a.x, b.x, t),
+        y: s.fx_lerp(a.y, b.y, t),
+        z: s.fx_lerp(a.z, b.z, t),
+        w: s.fx_lerp(a.w, b.w, t)
+    };
+}
+
+// Drop to 3D (integer lanes unchanged).
+fn vec4_xyz(v: Vec4) -> (result: v3.Vec3) {
+    return v3.Vec3 { x: v.x, y: v.y, z: v.z };
+}
+
+// Lift a 3D point to homogeneous form with w = 1 (integer) or w = ONE (fx).
+fn vec4_point(p: v3.Vec3) -> (result: Vec4) {
+    return Vec4 { x: p.x, y: p.y, z: p.z, w: 1 };
+}
+
+fn vec4_point_fx(p: v3.Vec3) -> (result: Vec4) {
+    return Vec4 { x: p.x, y: p.y, z: p.z, w: 65536 };
+}
+
+// Enum payloads cannot carry a record declared in another module
+// (see ENG-PRESSURE-0007), so the divided lanes travel as three scalar
+// payload fields; vec4_hom_vec rebuilds the Vec3 for callers.
+enum Homogenized { Ok { x: i64, y: i64, z: i64 }, WZero }
+
+// Perspective divide over Q16.16 lanes: xyz / w. w == 0 yields WZero instead
+// of a checked-division failure, so clip-space points behind or on the eye
+// plane are representable as values rather than traps.
+fn vec4_homogenize_fx(v: Vec4) -> (result: Homogenized) {
+    if v.w == 0 {
+        return Homogenized.WZero;
+    }
+    return Homogenized.Ok {
+        x: s.fx_div(v.x, v.w),
+        y: s.fx_div(v.y, v.w),
+        z: s.fx_div(v.z, v.w)
+    };
+}
+
+fn vec4_hom_vec(v: Vec4) -> (result: v3.Vec3) {
+    return match vec4_homogenize_fx(v) {
+        Homogenized.Ok { x, y, z } => v3.Vec3 { x: x, y: y, z: z },
+        WZero => v3.Vec3 { x: 0, y: 0, z: 0 },
+    };
+}
+
+// ---- Scalar boundary probes ----
+
+fn vec4_dot_vals(ax: i64, ay: i64, az: i64, aw: i64, bx: i64, by: i64, bz: i64, bw: i64) -> (result: i64) {
+    return vec4_dot(
+        Vec4 { x: ax, y: ay, z: az, w: aw },
+        Vec4 { x: bx, y: by, z: bz, w: bw }
+    );
+}
+
+fn vec4_hom_x(x: i64, y: i64, z: i64, w: i64) -> (result: i64) {
+    return match vec4_homogenize_fx(Vec4 { x: x, y: y, z: z, w: w }) {
+        Homogenized.Ok { x, y, z } => x,
+        WZero => 0,
+    };
+}
+
+fn vec4_hom_wzero(x: i64, y: i64, z: i64, w: i64) -> (result: bool) {
+    return match vec4_homogenize_fx(Vec4 { x: x, y: y, z: z, w: w }) {
+        Homogenized.Ok { x, y, z } => false,
+        WZero => true,
+    };
+}

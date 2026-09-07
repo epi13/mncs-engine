@@ -1,0 +1,166 @@
+mncs 0.10;
+
+// engine.scene.camera — look-at views and clip-to-screen projection over
+// Q16.16. World units are Q16.16 throughout; the camera looks down its local
+// -z toward the target with y up (y-down flips happen in the viewport).
+module engine.scene.camera;
+
+use engine.math.scalar as s;
+use engine.math.mat4 as m4;
+use engine.math.vec3 as v3;
+use engine.math.vec4 as v4;
+use engine.raster.rasterizer as rast;
+
+record Camera { pos: v3.Vec3, target: v3.Vec3, up: v3.Vec3 }
+
+record ViewMat { m: [i64; 16] }
+
+enum ViewResult { Ok { v: ViewMat }, BadUp }
+
+// Look-at view matrix. Fails closed as BadUp when the view direction is
+// zero (eye == target) or the up vector is parallel to it (no 0/0 divide
+// reachable: every normalize is matched before use).
+fn lookat(eye: v3.Vec3, target: v3.Vec3, up: v3.Vec3) -> (result: ViewResult) {
+    let fwd: v3.Vec3 = v3.vec3_sub(target, eye);
+    return match v3.vec3_normalize(fwd) {
+        v3.Norm3.Degenerate => ViewResult.BadUp,
+        v3.Norm3.Ok { v } => lookat_axes(eye, v, up),
+    };
+}
+
+fn lookat_axes(eye: v3.Vec3, f: v3.Vec3, up: v3.Vec3) -> (result: ViewResult) {
+    // The raw cross of two Q16.16 unit vectors has lanes up to 2^32: exact
+    // in i64, but squaring those lanes inside normalize would wrap (2^64).
+    // Narrowing by 2^16 first keeps every lane in contract; the direction
+    // is preserved up to +-1 LSB of truncation per lane, which the matrix
+    // orthonormality absorbs (documented axis error, not a fallback).
+    let raw: v3.Vec3 = v3.vec3_cross(f, up);
+    let narrowed: v3.Vec3 = v3.Vec3 { x: raw.x / 65536, y: raw.y / 65536, z: raw.z / 65536 };
+    return match v3.vec3_normalize(narrowed) {
+        v3.Norm3.Degenerate => ViewResult.BadUp,
+        v3.Norm3.Ok { v } => lookat_matrix(eye, f, v),
+    };
+}
+
+fn lookat_matrix(eye: v3.Vec3, f: v3.Vec3, s_axis: v3.Vec3) -> (result: ViewResult) {
+    // cross(s, f) of two Q16.16 unit vectors has Q32.32 lanes (scaled
+    // x65536); narrowing by 2^16 restores Q16.16 unit scale up to +-1 LSB
+    // per lane, exactly like the s-axis narrowing in lookat_axes.
+    let raw_u: v3.Vec3 = v3.vec3_cross(s_axis, f);
+    let u: v3.Vec3 = v3.Vec3 { x: raw_u.x / 65536, y: raw_u.y / 65536, z: raw_u.z / 65536 };
+    let z: i64 = 0;
+    let one: i64 = 65536;
+    // Rows: s, u, -f with translation -dot(axis, eye).
+    let tx: i64 = s.neg_wrap_i64(v3.vec3_fx_dot(s_axis, eye));
+    let ty: i64 = s.neg_wrap_i64(v3.vec3_fx_dot(u, eye));
+    let tz: i64 = v3.vec3_fx_dot(f, eye);
+    let nf: v3.Vec3 = v3.vec3_neg(f);
+    let m: [i64; 16] = [
+        s_axis.x, s_axis.y, s_axis.z, tx,
+        u.x, u.y, u.z, ty,
+        nf.x, nf.y, nf.z, tz,
+        z, z, z, one
+    ];
+    return ViewResult.Ok { v: ViewMat { m: m } };
+}
+
+// Enum payloads cannot carry a record declared in another module (see
+// ENG-PRESSURE-0007), so the divided lanes travel as scalars; make_svert
+// rebuilds the raster vertex at the call site (cross-module record
+// construction itself is total and clean).
+enum ScreenVert { Ok { x: i64, y: i64, z: i64, r: i64, g: i64, b: i64, u: i64, v: i64 }, Clipped }
+
+// Clip-space homogeneous point to a raster vertex: perspective divide with
+// a w <= 0 guard (behind/on the eye plane clips as a value), viewport
+// mapping, and NDC z passthrough for the depth buffer.
+fn clip_to_screen(clip: v4.Vec4, r: i64, g: i64, b: i64, u: i64, v: i64) -> (result: ScreenVert) {
+    if clip.w <= 0 {
+        return ScreenVert.Clipped;
+    }
+    return match v4.vec4_homogenize_fx(clip) {
+        v4.Homogenized.WZero => ScreenVert.Clipped,
+        v4.Homogenized.Ok { x, y, z } => screen_vert_xyz(x, y, z, r, g, b, u, v),
+    };
+}
+
+fn screen_vert_xyz(x: i64, y: i64, z: i64, r: i64, g: i64, b: i64, u: i64, v: i64) -> (result: ScreenVert) {
+    let pt: rast.ScreenPt = rast.viewport(x, y);
+    return ScreenVert.Ok { x: pt.x, y: pt.y, z: z, r: r, g: g, b: b, u: u, v: v };
+}
+
+fn make_svert(sv: ScreenVert) -> (result: rast.SVert) {
+    return match sv {
+        ScreenVert.Ok { x, y, z, r, g, b, u, v } => rast.SVert { x: x, y: y, z: z, r: r, g: g, b: b, u: u, v: v, w: 65536 },
+        Clipped => rast.SVert { x: 0, y: 0, z: 131072, r: 0, g: 0, b: 0, u: 0, v: 0, w: 65536 },
+    };
+}
+
+// ---- Scalar boundary probes ----
+
+fn lookat_ok() -> (result: bool) {
+    let eye: v3.Vec3 = v3.Vec3 { x: 0, y: 0, z: 327680 };
+    let tgt: v3.Vec3 = v3.Vec3 { x: 0, y: 0, z: 0 };
+    let up: v3.Vec3 = v3.Vec3 { x: 0, y: 65536, z: 0 };
+    return match lookat(eye, tgt, up) {
+        ViewResult.Ok { v } => true,
+        BadUp => false,
+    };
+}
+
+fn lookat_bad() -> (result: bool) {
+    let eye: v3.Vec3 = v3.Vec3 { x: 0, y: 0, z: 0 };
+    let tgt: v3.Vec3 = v3.Vec3 { x: 0, y: 0, z: 0 };
+    let up: v3.Vec3 = v3.Vec3 { x: 0, y: 65536, z: 0 };
+    return match lookat(eye, tgt, up) {
+        ViewResult.Ok { v } => false,
+        BadUp => true,
+    };
+}
+
+// m22 of the default view (camera at +z looking at origin): +1 in Q16.16.
+fn lookat_m22() -> (result: i64) {
+    let eye: v3.Vec3 = v3.Vec3 { x: 0, y: 0, z: 327680 };
+    let tgt: v3.Vec3 = v3.Vec3 { x: 0, y: 0, z: 0 };
+    let up: v3.Vec3 = v3.Vec3 { x: 0, y: 65536, z: 0 };
+    return match lookat(eye, tgt, up) {
+        ViewResult.Ok { v } => v.m[10],
+        BadUp => 0,
+    };
+}
+
+fn screen_xy() -> (result: i64) {
+    let clip: v4.Vec4 = v4.Vec4 { x: 0, y: 0, z: 0, w: 65536 };
+    return match clip_to_screen(clip, 0, 0, 0, 0, 0) {
+        ScreenVert.Ok { x, y, z, r, g, b, u, v } => (x *% 16) +% y,
+        Clipped => 0 - 1,
+    };
+}
+
+fn probe_sv_x() -> (result: i64) {
+    let clip: v4.Vec4 = v4.Vec4 { x: 0 - 65536, y: 0 - 65536, z: 174733, w: 262144 };
+    return make_svert(clip_to_screen(clip, 0, 0, 0, 0, 0)).x;
+}
+
+fn probe_sv_z() -> (result: i64) {
+    let clip: v4.Vec4 = v4.Vec4 { x: 0 - 65536, y: 0 - 65536, z: 174733, w: 262144 };
+    return match clip_to_screen(clip, 0, 0, 0, 0, 0) {
+        ScreenVert.Ok { x, y, z, r, g, b, u, v } => z,
+        Clipped => 0 - 1,
+    };
+}
+
+fn probe_sv_pack() -> (result: i64) {
+    let clip: v4.Vec4 = v4.Vec4 { x: 0 - 65536, y: 0 - 65536, z: 174733, w: 262144 };
+    return match clip_to_screen(clip, 0, 0, 0, 0, 0) {
+        ScreenVert.Ok { x, y, z, r, g, b, u, v } => (x *% 16) +% y,
+        Clipped => 0 - 1,
+    };
+}
+
+fn screen_clipped() -> (result: bool) {
+    let clip: v4.Vec4 = v4.Vec4 { x: 0, y: 0, z: 0, w: 0 };
+    return match clip_to_screen(clip, 0, 0, 0, 0, 0) {
+        ScreenVert.Ok { x, y, z, r, g, b, u, v } => false,
+        Clipped => true,
+    };
+}

@@ -1,0 +1,17 @@
+mncs 0.10;
+
+// Minimized reproducer for ENG-PRESSURE-0011: bare nested sequences work
+// within one module but are rejected at elaboration across module
+// boundaries (MNE117/MNE133 on arguments, MNE135/MNE115 on results —
+// diagnostics in docs/PRESSURE.md). The portable cross-module carrier is a
+// record wrapper (cf. engine.image.framebuffer.FB16).
+module pressure.nested_seq;
+
+fn read_cell(grid: [[i64; 2]; 2], r: u64, c: u64) -> (result: i64) {
+    return grid[r][c];
+}
+
+fn probe_nested_seq() -> (result: i64) {
+    let grid: [[i64; 2]; 2] = [[1, 2], [3, 4]];
+    return ((read_cell(grid, 0, 0) +% read_cell(grid, 0, 1)) +% read_cell(grid, 1, 0)) +% read_cell(grid, 1, 1);
+}

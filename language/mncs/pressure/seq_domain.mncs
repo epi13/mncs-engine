@@ -1,0 +1,14 @@
+mncs 0.10;
+
+// Minimized reproducer for ENG-PRESSURE-0010: `[u64; N]` cannot serve as an
+// iteration domain (MNB101); `[i64; N]` traverses on every backend.
+// Rejected: `iterate i over Von: [u64; N]`.
+module pressure.seq_domain;
+
+fn probe_sum() -> (result: i64) {
+    let keys: [i64; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+    iterate k over keys carrying acc: i64 = 0 {
+        next acc = acc +% keys[k];
+    }
+    return acc;
+}

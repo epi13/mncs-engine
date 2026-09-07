@@ -1,0 +1,12 @@
+mncs 0.10;
+
+// Minimized reproducer for ENG-PRESSURE-0006: isqrt over u64::MAX diverges
+// on the LLVM-IR and C11 backends relative to the reference backend.
+// floor(sqrt(2^64 - 1)) == 2^32 - 1 == 4294967295.
+module pressure.isqrt_max;
+
+use engine.math.scalar as s;
+
+fn probe_isqrt_max() -> (result: u64) {
+    return s.isqrt_u64(18446744073709551615);
+}

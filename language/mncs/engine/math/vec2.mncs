@@ -1,0 +1,139 @@
+mncs 0.10;
+
+// engine.math.vec2 — integer 2D vectors with Q16.16 fixed-point extensions.
+//
+// Lanes are i64. Integer operations are exact within their wrapping contract;
+// `fx_*` operations interpret lanes as Q16.16 via engine.math.scalar. There
+// is deliberately no operator overloading and no implicit int/fixed
+// conversion: every unit change is a named function.
+module engine.math.vec2;
+
+use engine.math.scalar as s;
+
+record Vec2 { x: i64, y: i64 }
+
+fn vec2(x: i64, y: i64) -> (result: Vec2) {
+    return Vec2 { x: x, y: y };
+}
+
+fn vec2_zero() -> (result: Vec2) {
+    return Vec2 { x: 0, y: 0 };
+}
+
+fn vec2_add(a: Vec2, b: Vec2) -> (result: Vec2) {
+    return Vec2 { x: a.x +% b.x, y: a.y +% b.y };
+}
+
+fn vec2_sub(a: Vec2, b: Vec2) -> (result: Vec2) {
+    return Vec2 { x: a.x -% b.x, y: a.y -% b.y };
+}
+
+fn vec2_neg(v: Vec2) -> (result: Vec2) {
+    return Vec2 { x: s.neg_wrap_i64(v.x), y: s.neg_wrap_i64(v.y) };
+}
+
+fn vec2_scale(v: Vec2, k: i64) -> (result: Vec2) {
+    return Vec2 { x: v.x *% k, y: v.y *% k };
+}
+
+// Integer dot product. Exact while the lane products fit (contract:
+// |lanes| <= 3037000499 keeps every partial product inside i64).
+fn vec2_dot(a: Vec2, b: Vec2) -> (result: i64) {
+    return (a.x *% b.x) +% (a.y *% b.y);
+}
+
+// 2D "cross": the z lane of the 3D cross of (a,0) x (b,0). This is the
+// orientation predicate core used by the rasterizer and geometry layer.
+fn vec2_cross_z(a: Vec2, b: Vec2) -> (result: i64) {
+    return (a.x *% b.y) -% (a.y *% b.x);
+}
+
+fn vec2_len2(v: Vec2) -> (result: i64) {
+    return vec2_dot(v, v);
+}
+
+// Squared distance as u64 (squares of i64 lanes are non-negative absent
+// overflow; the documented bound is |lane| <= 3037000499).
+fn vec2_dist2(a: Vec2, b: Vec2) -> (result: u64) {
+    let dx: i64 = a.x -% b.x;
+    let dy: i64 = a.y -% b.y;
+    return ((dx *% dx) +% (dy *% dy)) as u64;
+}
+
+// Integer length (floor) via the scalar digit-by-digit root.
+fn vec2_len_int(v: Vec2) -> (result: u64) {
+    return s.isqrt_u64(vec2_dist2(v, vec2_zero()));
+}
+
+fn vec2_min(a: Vec2, b: Vec2) -> (result: Vec2) {
+    return Vec2 { x: s.min_i64(a.x, b.x), y: s.min_i64(a.y, b.y) };
+}
+
+fn vec2_max(a: Vec2, b: Vec2) -> (result: Vec2) {
+    return Vec2 { x: s.max_i64(a.x, b.x), y: s.max_i64(a.y, b.y) };
+}
+
+fn vec2_clamp(v: Vec2, lo: Vec2, hi: Vec2) -> (result: Vec2) {
+    return Vec2 { x: s.clamp_i64(v.x, lo.x, hi.x), y: s.clamp_i64(v.y, lo.y, hi.y) };
+}
+
+fn vec2_equal(a: Vec2, b: Vec2) -> (result: bool) {
+    return (a.x == b.x) && (a.y == b.y);
+}
+
+// Q16.16 scale and dot over Q16.16 lanes.
+fn vec2_fx_scale(v: Vec2, k: i64) -> (result: Vec2) {
+    return Vec2 { x: s.fx_mul(v.x, k), y: s.fx_mul(v.y, k) };
+}
+
+fn vec2_fx_dot(a: Vec2, b: Vec2) -> (result: i64) {
+    return s.fx_mul(a.x, b.x) +% s.fx_mul(a.y, b.y);
+}
+
+// Q16.16 lerp with t in Q16.16.
+fn vec2_fx_lerp(a: Vec2, b: Vec2, t: i64) -> (result: Vec2) {
+    return Vec2 { x: s.fx_lerp(a.x, b.x, t), y: s.fx_lerp(a.y, b.y, t) };
+}
+
+enum Norm2 { Ok { v: Vec2 }, Degenerate }
+
+// Normalize integer lanes to a Q16.16 unit vector. The result lanes are
+// Q16.16 even though the input lanes are integers: the unit change is part
+// of this function's contract. Zero input yields Degenerate (no division by
+// zero is expressible on this path).
+fn vec2_normalize(v: Vec2) -> (result: Norm2) {
+    let d2: u64 = vec2_dist2(v, vec2_zero());
+    if d2 == 0 {
+        return Norm2.Degenerate;
+    }
+    let len_fx: i64 = s.fx_from_int(s.isqrt_u64(d2) as i64);
+    return Norm2.Ok { v: Vec2 { x: s.fx_div(s.fx_from_int(v.x), len_fx), y: s.fx_div(s.fx_from_int(v.y), len_fx) } };
+}
+
+// ---- Scalar boundary probes (keep corpus integers scalar) ----
+
+fn vec2_dot_vals(ax: i64, ay: i64, bx: i64, by: i64) -> (result: i64) {
+    return vec2_dot(Vec2 { x: ax, y: ay }, Vec2 { x: bx, y: by });
+}
+
+fn vec2_cross_vals(ax: i64, ay: i64, bx: i64, by: i64) -> (result: i64) {
+    return vec2_cross_z(Vec2 { x: ax, y: ay }, Vec2 { x: bx, y: by });
+}
+
+fn vec2_len2_vals(x: i64, y: i64) -> (result: i64) {
+    return vec2_len2(Vec2 { x: x, y: y });
+}
+
+fn vec2_norm_x(x: i64, y: i64) -> (result: i64) {
+    return match vec2_normalize(Vec2 { x: x, y: y }) {
+        Norm2.Ok { v } => v.x,
+        Degenerate => 0 - 65536,
+    };
+}
+
+fn vec2_norm_degenerate(x: i64, y: i64) -> (result: bool) {
+    return match vec2_normalize(Vec2 { x: x, y: y }) {
+        Norm2.Ok { v } => false,
+        Degenerate => true,
+    };
+}

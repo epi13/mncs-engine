@@ -1,0 +1,16 @@
+mncs 0.10;
+
+// Minimized reproducer for ENG-PRESSURE-0001: `>>` on u64 with the high bit
+// set. Mathematically (2^64 - 2) >> 1 == 2^63 - 1; the portable-WASM
+// backend lowers u64 `>>` arithmetically, sign-extending instead.
+module pressure.shr_u64;
+
+fn probe_shr_max() -> (result: u64) {
+    let v: u64 = 18446744073709551614;
+    return v >> 1;
+}
+
+fn probe_shr_highbit() -> (result: u64) {
+    let v: u64 = 9223372036854775808;
+    return v >> 1;
+}

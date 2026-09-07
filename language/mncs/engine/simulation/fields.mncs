@@ -1,0 +1,134 @@
+mncs 0.10;
+
+// engine.simulation.fields — integer value noise and fractal octaves in
+// Q16.16, plus a grayscale heightmap path onto FB16.
+//
+// Lattice hashes use wrapping multiply/add only, with `% 256` reduction on
+// a double-modded non-negative residue (portable: no `>>`, no `&` — see
+// ENG-PRESSURE-0001 and ENG-PRESSURE-0009). Interpolation is bilinear with
+// a smoothstep fade, all in Q16.16 via engine.math.scalar. Coordinates are
+// Q16.16 lattice units; the field tiles nowhere (integer lattice wraps by
+// contract, documented, not relied upon).
+module engine.simulation.fields;
+
+use engine.math.scalar as s;
+use engine.image.framebuffer as fb;
+use engine.image.color as color;
+
+// Raw lattice hash in 0..255. The multiply/xor-shift style mix stays in
+// wrapping i64; the residue is forced non-negative before reduction so the
+// contract holds for negative mixes too.
+fn hash2(x: i64, y: i64, seed: i64) -> (result: i64) {
+    let h: i64 = ((x *% 374761393) +% (y *% 668265263)) +% (seed *% 974711);
+    let m: i64 = h *% (h +% 3266489917);
+    return ((m % 256) +% 256) % 256;
+}
+
+// Smoothstep fade of a Q16.16 unit fraction: t*%t*%(3-2*%t).
+fn fade(t: i64) -> (result: i64) {
+    let t2: i64 = s.fx_mul(t, t);
+    return s.fx_mul(t2, (196608 -% s.fx_mul(131072, t)));
+}
+
+// Value noise at Q16.16 coordinates: lattice corners hashed to 0..255,
+// promoted to Q16.16, bilinearly blended with the fade. Result in Q16.16
+// (0..=16711680, i.e. 255.0).
+fn value_noise(xq: i64, yq: i64, seed: i64) -> (result: i64) {
+    let x0: i64 = s.fx_to_int_floor(xq);
+    let y0: i64 = s.fx_to_int_floor(yq);
+    let tx: i64 = xq -% s.fx_from_int(x0);
+    let ty: i64 = yq -% s.fx_from_int(y0);
+    let ux: i64 = fade(tx);
+    let uy: i64 = fade(ty);
+    let v00: i64 = hash2(x0, y0, seed) *% 65536;
+    let v10: i64 = hash2(x0 +% 1, y0, seed) *% 65536;
+    let v01: i64 = hash2(x0, y0 +% 1, seed) *% 65536;
+    let v11: i64 = hash2(x0 +% 1, y0 +% 1, seed) *% 65536;
+    let top: i64 = s.fx_lerp(v00, v10, ux);
+    let bot: i64 = s.fx_lerp(v01, v11, ux);
+    return s.fx_lerp(top, bot, uy);
+}
+
+// Two-octave fractal noise: base frequency 1/4 lattice unit per pixel row
+// step plus a doubled octave at half amplitude, normalized back to the
+// 0..255 Q16.16 range by halving the sum (divide by literal 2).
+fn fbm2(xq: i64, yq: i64, seed: i64) -> (result: i64) {
+    let base: i64 = value_noise(xq, yq, seed);
+    let oct: i64 = value_noise(xq *% 2, yq *% 2, seed +% 101);
+    return (base +% oct) / 2;
+}
+
+// Heightmap pixel: fbm sampled on a 4x4-lattice-unit patch over the 16x16
+// frame, narrowed to a gray channel and packed opaque.
+fn height_px(col: i64, row: i64, seed: i64) -> (result: i64) {
+    let xq: i64 = col *% 16384;
+    let yq: i64 = row *% 16384;
+    let g: i64 = s.fx_narrow_trunc(fbm2(xq, yq, seed));
+    return color.pack_clamped(g, g, g, 255);
+}
+
+fn height_row(frame: fb.FB16, r: u64, seed: i64) -> (result: fb.FB16) {
+    let row: [i64; 16] = fb.row16(frame, r);
+    let ri: i64 = r as i64;
+    iterate i over row carrying out: [i64; 16] = row {
+        next out = replace(out, i, height_px(i as i64, ri, seed));
+    }
+    return fb.set_row16(frame, r, out);
+}
+
+fn heightmap(seed: i64) -> (result: fb.FB16) {
+    let blank: fb.FB16 = fb.blank16(0);
+    iterate r over blank.rows carrying acc: fb.FB16 = blank {
+        next acc = height_row(acc, r, seed);
+    }
+    return acc;
+}
+
+// One sample row folded into the digest (helper-chained iteration: the
+// inner fold lives here so the outer fold stays a single `next`).
+fn sample_row(h: i64, xq: i64, seed: i64) -> (result: i64) {
+    let ys: [i64; 4] = [0, 262144, 524288, 786432];
+    iterate yi over ys carrying h2: i64 = h {
+        next h2 = ((h2 *% 31) +% fbm2(xq, ys[yi], seed));
+    }
+    return h2;
+}
+
+// Digest over a fixed 4x4 sample grid (step 4 lattice units) of fbm values.
+fn sample_digest(seed: i64) -> (result: i64) {
+    let xs: [i64; 4] = [0, 262144, 524288, 786432];
+    iterate xi over xs carrying h: i64 = 0 {
+        next h = sample_row(h, xs[xi], seed);
+    }
+    return h;
+}
+
+// ---- Conformance probes ----
+
+fn probe_hash_origin() -> (result: i64) {
+    return hash2(0, 0, 7);
+}
+
+fn probe_hash_spread() -> (result: i64) {
+    return (((hash2(3, 11, 7) *% 31) +% hash2(11, 3, 7)) *% 31) +% hash2(200, 300, 7);
+}
+
+fn probe_noise_origin() -> (result: i64) {
+    return value_noise(0, 0, 7);
+}
+
+fn probe_noise_mid() -> (result: i64) {
+    return value_noise(131072, 196608, 7);
+}
+
+fn probe_fbm_digest() -> (result: i64) {
+    return sample_digest(7);
+}
+
+fn probe_heightmap_checksum() -> (result: i64) {
+    return fb.checksum16(heightmap(7));
+}
+
+fn probe_heightmap_gray_count() -> (result: i64) {
+    return fb.fb16_count(heightmap(7), height_px(0, 0, 7));
+}

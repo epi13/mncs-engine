@@ -22,17 +22,23 @@ language/mncs/engine/
   foundation/    semantic primitives and invariant probes
   math/          vectors, matrices, transforms, numeric policy
   image/         pixels, images, color and framebuffer representation
-  compute/       parallel work, buffers, dispatch and synchronization
   raster/        software rasterization and reference rendering
-  geometry/      meshes, primitives and spatial data
-  scene/         cameras, transforms and scene representation
-  simulation/    particles, physics-oriented and procedural workloads
-  render/        render orchestration independent of a vendor API
-  platform/      capability-facing window/input/surface contracts only
-  evidence/      conformance observations and comparison semantics
+  scene/         cameras, meshes and scene representation
+  simulation/    particles, boids and procedural fields
+  render/        2D primitives (draw2d) independent of a vendor API
+language/mncs/pressure/
+                 minimized reproducers per ENG-PRESSURE-* ID, the pins
+                 regression net, and documented known-failing cases
+examples/        standalone MNCS programs (fountain, flock)
+benches/         deterministic cost workloads with step budgets
+tests/corpora/   baked expectations run by scripts/conformance.py
+docs/            architecture, pressure ledger, benchmarks, guidance
 ```
 
-Directories are added when they gain real MNCS implementation. The repository should not accumulate decorative placeholder modules.
+Only `engine/`, `pressure/`, `examples/`, and `benches/` hold executable
+MNCS. Not yet started: `compute/` (target-neutral parallelism),
+`platform/` (window/input/surface contracts), `evidence/` (observation
+schema). The repository should not accumulate decorative placeholder modules.
 
 ## First pressure ladder
 
@@ -74,7 +80,22 @@ See [`rfcs/README.md`](rfcs/README.md).
 
 ## Current status
 
-Bootstrap. The repository is establishing its MNCS-only policy, pressure architecture, RFCs, and first executable language probe before beginning the 2D compute-canvas slice.
+Pressure campaign 01 (this run): 25 corpora, all passing on
+`mncs-research-bytecode`, covering math (scalar/vec2/vec3/vec4/mat4/
+transform/quat/geometry), image (color/framebuffer), render/draw2d,
+rasterizer, scene (mesh/camera/cube scene), simulation
+(particles/boids/fields), two rendered examples, one cost benchmark,
+and the pressure regression pins. The 5-backend matrix (25 corpora ×
+reference/WASM/LLVM-IR/C11/Cranelift = 125 cells) stands at 121 PASS +
+4 classified known divergences (`tests/known-divergences.json`:
+`math-scalar#isqrt-max` on LLVM-IR/C11 under ENG-PRESSURE-0006,
+`pressure-shr-u64` on WASM under ENG-PRESSURE-0001), zero unclassified
+failures. Run it with `scripts/conformance.py --matrix`. The pressure ledger (`docs/PRESSURE.md`)
+holds ENG-PRESSURE-0001..0015 with minimized reproducers; two entries
+were refined by evidence this run (0006 is u64 argument high-bit loss,
+not isqrt; 0011 is elaboration rejection, not corruption) and one did
+not reproduce (0003). Deliberately unproven: PTX/GPU execution, Fabric
+distribution, verifier loops, window/input boundaries.
 
 ## License
 

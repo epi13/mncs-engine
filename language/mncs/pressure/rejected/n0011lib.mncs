@@ -1,0 +1,13 @@
+mncs 0.10;
+
+// Shared callee for the ENG-PRESSURE-0011 rejected callers. This module
+// itself elaborates; the callers do not.
+module pressure.rejected.n0011lib;
+
+fn read_cell(grid: [[i64; 2]; 2], r: u64, c: u64) -> (result: i64) {
+    return grid[r][c];
+}
+
+fn make_grid() -> (result: [[i64; 2]; 2]) {
+    return [[5, 6], [7, 8]];
+}

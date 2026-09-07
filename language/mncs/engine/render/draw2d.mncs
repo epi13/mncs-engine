@@ -1,0 +1,289 @@
+mncs 0.10;
+
+// engine.render.draw2d — deterministic CPU/reference 2D primitives over
+// FB16. Coordinates are i64; every routine is total via the framebuffer's
+// out-of-bounds semantics, so clipping is structural rather than trapped.
+// All scan conversion is integer-only by construction:
+//   lines   — Bresenham (no division);
+//   circles — midpoint (no division, no trigonometry);
+//   discs / filled triangles — integer edge functions + isqrt spans.
+// Strict `select` evaluates both sides, so any indexing under a condition
+// first clamps to a safe index and only then selects (see blit_row).
+module engine.render.draw2d;
+
+use engine.math.scalar as s;
+use engine.image.framebuffer as fb;
+use engine.math.geometry as geo;
+use engine.math.vec2 as v2;
+
+// Total pixel write: negative or oversized coordinates map to huge u64 and
+// are absorbed by set16_rc's bounds check.
+fn put_px(frame: fb.FB16, x: i64, y: i64, c: i64) -> (result: fb.FB16) {
+    return fb.set16_rc(frame, (x as u64), (y as u64), c);
+}
+
+// Clamp an x coordinate into 0..15 for always-safe row indexing.
+fn clamp_x(x: i64) -> (result: u64) {
+    return (s.clamp_i64(x, 0, 15) as u64);
+}
+
+// Fill [xa, xb) of one row (total for all i64 bounds).
+fn fill_span_row(row: [i64; 16], xa: i64, xb: i64, c: i64) -> (result: [i64; 16]) {
+    iterate i over row carrying out: [i64; 16] = row {
+        let ci: i64 = i as i64;
+        let inside: bool = (ci >= xa) && (ci < xb);
+        next out = replace(out, i, select(inside, c, out[i]));
+    }
+    return out;
+}
+
+fn hline(frame: fb.FB16, y: i64, xa: i64, xb: i64, c: i64) -> (result: fb.FB16) {
+    let r: u64 = y as u64;
+    let row: [i64; 16] = fb.row16(frame, r);
+    return fb.set_row16(frame, r, fill_span_row(row, xa, xb, c));
+}
+
+fn vline_row(frame: fb.FB16, r: u64, x: i64, ya: i64, yb: i64, c: i64) -> (result: fb.FB16) {
+    let ri: i64 = r as i64;
+    let inside: bool = ((ri >= ya) && (ri < yb)) && ((x >= 0) && (x < 16));
+    let row: [i64; 16] = fb.row16(frame, r);
+    let drawn: [i64; 16] = replace(row, clamp_x(x), c);
+    return fb.set_row16(frame, r, select(inside, drawn, row));
+}
+
+fn vline(frame: fb.FB16, x: i64, ya: i64, yb: i64, c: i64) -> (result: fb.FB16) {
+    iterate r over frame.rows carrying acc: fb.FB16 = frame {
+        next acc = vline_row(acc, r, x, ya, yb, c);
+    }
+    return acc;
+}
+
+// ---- Bresenham lines ----
+
+record LineState { x: i64, y: i64, dx: i64, dy: i64, sx: i64, sy: i64, err: i64 }
+record LineWork { fb: fb.FB16, st: LineState, x1: i64, y1: i64, done: bool, color: i64 }
+
+fn line_init(x0: i64, y0: i64, x1: i64, y1: i64) -> (result: LineState) {
+    let dx: i64 = s.abs_sat_i64(x1 -% x0);
+    let dy: i64 = s.neg_wrap_i64(s.abs_sat_i64(y1 -% y0));
+    return LineState {
+        x: x0, y: y0, dx: dx, dy: dy,
+        sx: s.sign_i64(x1 -% x0), sy: s.sign_i64(y1 -% y0),
+        err: dx +% dy
+    };
+}
+
+fn line_step(w: LineWork) -> (result: LineWork) {
+    if w.done {
+        return w;
+    }
+    let plotted: fb.FB16 = put_px(w.fb, w.st.x, w.st.y, w.color);
+    let at_end: bool = (w.st.x == w.x1) && (w.st.y == w.y1);
+    if at_end {
+        return LineWork { fb: plotted, st: w.st, x1: w.x1, y1: w.y1, done: true, color: w.color };
+    }
+    let e2: i64 = w.st.err *% 2;
+    let move_x: bool = e2 >= w.st.dy;
+    let move_y: bool = e2 <= w.st.dx;
+    let zx: i64 = 0;
+    let nx: i64 = w.st.x +% select(move_x, w.st.sx, zx);
+    let ny: i64 = w.st.y +% select(move_y, w.st.sy, zx);
+    let nx_err: i64 = w.st.err +% select(move_x, w.st.dy, zx);
+    let nerr: i64 = nx_err +% select(move_y, w.st.dx, zx);
+    let nst: LineState = LineState {
+        x: nx, y: ny, dx: w.st.dx, dy: w.st.dy,
+        sx: w.st.sx, sy: w.st.sy, err: nerr
+    };
+    return LineWork { fb: plotted, st: nst, x1: w.x1, y1: w.y1, done: false, color: w.color };
+}
+
+// 32 steps cover any 16x16 line (max max(|dx|,|dy|)+1 = 16 points); the done
+// flag holds longer runs exact.
+fn line32(w: LineWork) -> (result: LineWork) {
+    iterate steps up_to 32 carrying acc: LineWork = w {
+        next acc = line_step(acc);
+    }
+    return acc;
+}
+
+fn line(frame: fb.FB16, x0: i64, y0: i64, x1: i64, y1: i64, c: i64) -> (result: fb.FB16) {
+    let w: LineWork = LineWork {
+        fb: frame, st: line_init(x0, y0, x1, y1),
+        x1: x1, y1: y1, done: false, color: c
+    };
+    return line32(w).fb;
+}
+
+// ---- Rectangles ----
+
+fn rect_outline(frame: fb.FB16, xa: i64, ya: i64, xb: i64, yb: i64, c: i64) -> (result: fb.FB16) {
+    let top: fb.FB16 = hline(frame, ya, xa, xb, c);
+    let bottom: fb.FB16 = hline(top, yb -% 1, xa, xb, c);
+    let left: fb.FB16 = vline(bottom, xa, ya, yb, c);
+    return vline(left, xb -% 1, ya, yb, c);
+}
+
+fn fill_rect_row(frame: fb.FB16, r: u64, xa: i64, xb: i64, ya: i64, yb: i64, c: i64) -> (result: fb.FB16) {
+    let ri: i64 = r as i64;
+    let in_y: bool = (ri >= ya) && (ri < yb);
+    let row: [i64; 16] = fb.row16(frame, r);
+    let filled: [i64; 16] = fill_span_row(row, xa, xb, c);
+    return fb.set_row16(frame, r, select(in_y, filled, row));
+}
+
+fn fill_rect(frame: fb.FB16, xa: i64, ya: i64, xb: i64, yb: i64, c: i64) -> (result: fb.FB16) {
+    iterate r over frame.rows carrying acc: fb.FB16 = frame {
+        next acc = fill_rect_row(acc, r, xa, xb, ya, yb, c);
+    }
+    return acc;
+}
+
+// ---- Triangles (outline + edge-function fill) ----
+
+fn tri_outline(frame: fb.FB16, ax: i64, ay: i64, bx: i64, by: i64, cx: i64, cy: i64, c: i64) -> (result: fb.FB16) {
+    let e0: fb.FB16 = line(frame, ax, ay, bx, by, c);
+    let e1: fb.FB16 = line(e0, bx, by, cx, cy, c);
+    return line(e1, cx, cy, ax, ay, c);
+}
+
+fn fill_tri_row(frame: fb.FB16, r: u64, ax: i64, ay: i64, bx: i64, by: i64, cx: i64, cy: i64, c: i64) -> (result: fb.FB16) {
+    let row: [i64; 16] = fb.row16(frame, r);
+    let a: v2.Vec2 = v2.Vec2 { x: ax, y: ay };
+    let b: v2.Vec2 = v2.Vec2 { x: bx, y: by };
+    let cc: v2.Vec2 = v2.Vec2 { x: cx, y: cy };
+    iterate i over row carrying out: [i64; 16] = row {
+        let p: v2.Vec2 = v2.Vec2 { x: i as i64, y: r as i64 };
+        next out = replace(out, i, select(geo.point_in_tri(p, a, b, cc), c, out[i]));
+    }
+    return fb.set_row16(frame, r, out);
+}
+
+fn fill_tri(frame: fb.FB16, ax: i64, ay: i64, bx: i64, by: i64, cx: i64, cy: i64, c: i64) -> (result: fb.FB16) {
+    iterate r over frame.rows carrying acc: fb.FB16 = frame {
+        next acc = fill_tri_row(acc, r, ax, ay, bx, by, cx, cy, c);
+    }
+    return acc;
+}
+
+// ---- Midpoint circles and isqrt discs ----
+
+record CircState { x: i64, y: i64, err: i64 }
+record CircWork { fb: fb.FB16, st: CircState, cx: i64, cy: i64, done: bool, color: i64 }
+
+fn plot8(frame: fb.FB16, cx: i64, cy: i64, x: i64, y: i64, c: i64) -> (result: fb.FB16) {
+    let p0: fb.FB16 = put_px(frame, cx +% x, cy +% y, c);
+    let p1: fb.FB16 = put_px(p0, cx -% x, cy +% y, c);
+    let p2: fb.FB16 = put_px(p1, cx +% x, cy -% y, c);
+    let p3: fb.FB16 = put_px(p2, cx -% x, cy -% y, c);
+    let p4: fb.FB16 = put_px(p3, cx +% y, cy +% x, c);
+    let p5: fb.FB16 = put_px(p4, cx -% y, cy +% x, c);
+    let p6: fb.FB16 = put_px(p5, cx +% y, cy -% x, c);
+    return put_px(p6, cx -% y, cy -% x, c);
+}
+
+fn circ_step(w: CircWork) -> (result: CircWork) {
+    if w.done {
+        return w;
+    }
+    if w.st.x > w.st.y {
+        return CircWork { fb: w.fb, st: w.st, cx: w.cx, cy: w.cy, done: true, color: w.color };
+    }
+    let plotted: fb.FB16 = plot8(w.fb, w.cx, w.cy, w.st.x, w.st.y, w.color);
+    // Midpoint decision with err = 1 - r: err < 0 -> E pixel (y holds),
+    // else SE (y steps). E: err += 2x + 3; SE: err += 2(x-y) + 5, which the
+    // update below spells with post-increment values. All wrapping, total.
+    let step_y: bool = w.st.err >= 0;
+    let zy: i64 = 0;
+    let ny: i64 = w.st.y -% select(step_y, 1, zy);
+    let nx: i64 = w.st.x +% 1;
+    let nerr: i64 = (w.st.err +% 3 +% ((nx -% 1) *% 2)) -% select(step_y, ny *% 2, zy);
+    let nst: CircState = CircState { x: nx, y: ny, err: nerr };
+    return CircWork { fb: plotted, st: nst, cx: w.cx, cy: w.cy, done: false, color: w.color };
+}
+
+fn circ32(w: CircWork) -> (result: CircWork) {
+    iterate steps up_to 32 carrying acc: CircWork = w {
+        next acc = circ_step(acc);
+    }
+    return acc;
+}
+
+// Midpoint circle outline, radius r >= 0 (r = 0 plots the center pixel).
+fn circle(frame: fb.FB16, cx: i64, cy: i64, r: i64, c: i64) -> (result: fb.FB16) {
+    let rr: i64 = select(r < 0, 0, r);
+    let w: CircWork = CircWork {
+        fb: frame, st: CircState { x: 0, y: rr, err: 1 -% rr },
+        cx: cx, cy: cy, done: false, color: c
+    };
+    return circ32(w).fb;
+}
+
+// Filled disc via exact isqrt row spans: half-width = isqrt(r^2 - dy^2).
+fn disc_row(frame: fb.FB16, r: u64, cx: i64, cy: i64, rad: i64, c: i64) -> (result: fb.FB16) {
+    let dy: i64 = (r as i64) -% cy;
+    let half2: i64 = (rad *% rad) -% (dy *% dy);
+    if half2 < 0 {
+        return frame;
+    }
+    let half: i64 = s.isqrt_u64(half2 as u64) as i64;
+    let row: [i64; 16] = fb.row16(frame, r);
+    return fb.set_row16(frame, r, fill_span_row(row, cx -% half, (cx +% half) +% 1, c));
+}
+
+fn disc(frame: fb.FB16, cx: i64, cy: i64, r: i64, c: i64) -> (result: fb.FB16) {
+    let rr: i64 = select(r < 0, 0, r);
+    iterate i over frame.rows carrying acc: fb.FB16 = frame {
+        next acc = disc_row(acc, i, cx, cy, rr, c);
+    }
+    return acc;
+}
+
+// ---- Conformance probes (checksums baked from the reference backend) ----
+
+fn probe_line_diag() -> (result: i64) {
+    return fb.checksum16(line(fb.blank16(255), 0, 0, 15, 15, 4294967295));
+}
+
+fn probe_rect() -> (result: i64) {
+    return fb.checksum16(rect_outline(fb.blank16(255), 2, 2, 10, 8, 4278190335));
+}
+
+fn probe_fill_rect() -> (result: i64) {
+    return fb.checksum16(fill_rect(fb.blank16(255), 2, 2, 6, 6, 16711935));
+}
+
+fn probe_fill_tri() -> (result: i64) {
+    return fb.checksum16(fill_tri(fb.blank16(255), 0, 0, 15, 0, 0, 15, 4294967295));
+}
+
+fn probe_circle() -> (result: i64) {
+    return fb.checksum16(circle(fb.blank16(255), 8, 8, 6, 4278190335));
+}
+
+fn probe_disc() -> (result: i64) {
+    return fb.checksum16(disc(fb.blank16(255), 8, 8, 5, 16711935));
+}
+
+fn probe_disc_count() -> (result: i64) {
+    return fb.fb16_count(disc(fb.blank16(0), 8, 8, 5, 7), 7);
+}
+
+fn probe_line_count() -> (result: i64) {
+    return fb.fb16_count(line(fb.blank16(0), 0, 0, 15, 15, 1), 1);
+}
+
+fn probe_rect_count() -> (result: i64) {
+    return fb.fb16_count(rect_outline(fb.blank16(0), 2, 2, 10, 8, 1), 1);
+}
+
+fn probe_fill_rect_count() -> (result: i64) {
+    return fb.fb16_count(fill_rect(fb.blank16(0), 2, 2, 6, 6, 1), 1);
+}
+
+fn probe_fill_tri_count() -> (result: i64) {
+    return fb.fb16_count(fill_tri(fb.blank16(0), 0, 0, 15, 0, 0, 15, 1), 1);
+}
+
+fn probe_circle_count() -> (result: i64) {
+    return fb.fb16_count(circle(fb.blank16(0), 8, 8, 6, 1), 1);
+}

@@ -1,0 +1,194 @@
+mncs 0.10;
+
+// engine.simulation.particles — fixed-pool semi-implicit Euler integration
+// in Q16.16 over i64.
+//
+// The pool holds 16 particles as structure-of-arrays. The size is a
+// compile-time constant: variable-length particle lists need unbounded
+// sequences (see ENG-PRESSURE-0013), so pool growth/shrinkage is out of
+// scope and emitters recycle slots instead. All arithmetic is wrapping and
+// every bound is clamped, so stepping is total: no traps, no partiality.
+//
+// Units: positions in Q16.16 world units, velocities in Q16.16 units per
+// step, accelerations (gravity) in Q16.16 units per step squared. The
+// reference arena is [0, bound] on both axes with elastic clamp-bounce.
+module engine.simulation.particles;
+
+use engine.math.scalar as s;
+
+// One axis of integrated state.
+record Step1D { p: i64, v: i64 }
+
+// Sixteen-particle pool, structure-of-arrays so one `iterate` pass updates
+// every lane with record-carried accumulation.
+record Pool { px: [i64; 16], py: [i64; 16], vx: [i64; 16], vy: [i64; 16] }
+
+fn pool_size() -> (result: i64) {
+    return 16;
+}
+
+// Deterministic spawn: particles on a diagonal with a velocity spread.
+// A pure function of the lane index — MNCS has no RNG facility, so
+// stochastic emitters must be driven by caller-supplied hash streams
+// (see ENG-PRESSURE-0014).
+fn spawn_px(i: i64) -> (result: i64) {
+    return (i *% 65536) +% 32768;
+}
+
+fn spawn_py(i: i64) -> (result: i64) {
+    return ((15 -% i) *% 65536) +% 32768;
+}
+
+fn spawn_vx(i: i64) -> (result: i64) {
+    return (i -% 8) *% 2048;
+}
+
+fn spawn_vy(i: i64) -> (result: i64) {
+    return (((3 *% i) -% 8) *% 2048);
+}
+
+fn spawn_lane(pool: Pool, i: u64) -> (result: Pool) {
+    let k: i64 = i as i64;
+    return Pool {
+        px: replace(pool.px, i, spawn_px(k)),
+        py: replace(pool.py, i, spawn_py(k)),
+        vx: replace(pool.vx, i, spawn_vx(k)),
+        vy: replace(pool.vy, i, spawn_vy(k)),
+    };
+}
+
+fn spawn() -> (result: Pool) {
+    let empty: [i64; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let p0: Pool = Pool { px: empty, py: empty, vx: empty, vy: empty };
+    iterate i over p0.px carrying acc: Pool = p0 {
+        next acc = spawn_lane(acc, i);
+    }
+    return acc;
+}
+
+// One axis: v += a*dt, p += v*dt, then clamp to [0, bound] with velocity
+// reflection on contact. Tunneling past both walls in one step reflects
+// once and clamps; the position contract [0, bound] always holds.
+fn step_axis(p: i64, v: i64, a: i64, dt: i64, bound: i64) -> (result: Step1D) {
+    let nv: i64 = v +% s.fx_mul(a, dt);
+    let np: i64 = p +% s.fx_mul(nv, dt);
+    let hit: bool = (np < 0) || (np > bound);
+    return Step1D { p: s.clamp_i64(np, 0, bound), v: select(hit, s.fx_neg(nv), nv) };
+}
+
+fn step_lane(pool: Pool, acc: Pool, i: u64, dt: i64, gx: i64, gy: i64, bound: i64) -> (result: Pool) {
+    let sx: Step1D = step_axis(pool.px[i], pool.vx[i], gx, dt, bound);
+    let sy: Step1D = step_axis(pool.py[i], pool.vy[i], gy, dt, bound);
+    return Pool {
+        px: replace(acc.px, i, sx.p),
+        py: replace(acc.py, i, sy.p),
+        vx: replace(acc.vx, i, sx.v),
+        vy: replace(acc.vy, i, sy.v),
+    };
+}
+
+// Gravity step over the whole pool. Reads come from `pool`, writes go to
+// `acc`; each lane is written once so the single pass is exact.
+fn step_pool(pool: Pool, dt: i64, gx: i64, gy: i64, bound: i64) -> (result: Pool) {
+    iterate i over pool.px carrying acc: Pool = pool {
+        next acc = step_lane(pool, acc, i, dt, gx, gy, bound);
+    }
+    return acc;
+}
+
+// Canonical parameters: unit time step, downward gravity of 0.25 units per
+// step squared, 16x16 arena.
+fn step_default(pool: Pool) -> (result: Pool) {
+    return step_pool(pool, 65536, 0, 0 - 16384, 1048576);
+}
+
+fn steps2(pool: Pool) -> (result: Pool) {
+    return step_default(step_default(pool));
+}
+
+fn steps4(pool: Pool) -> (result: Pool) {
+    return steps2(steps2(pool));
+}
+
+fn steps8(pool: Pool) -> (result: Pool) {
+    return steps4(steps4(pool));
+}
+
+fn steps16(pool: Pool) -> (result: Pool) {
+    return steps8(steps8(pool));
+}
+
+fn steps32(pool: Pool) -> (result: Pool) {
+    return steps16(steps16(pool));
+}
+
+fn steps64(pool: Pool) -> (result: Pool) {
+    return steps32(steps32(pool));
+}
+
+// Deterministic digest over positions then velocities (h = h *% 31 +% lane).
+fn digest_lane(h: i64, v: i64) -> (result: i64) {
+    return (h *% 31) +% v;
+}
+
+fn pool_digest(pool: Pool) -> (result: i64) {
+    iterate i over pool.px carrying h: i64 = 0 {
+        next h = digest_lane(h, pool.px[i]);
+    }
+    iterate j over pool.py carrying h2: i64 = h {
+        next h2 = digest_lane(h2, pool.py[j]);
+    }
+    iterate k over pool.vx carrying h3: i64 = h2 {
+        next h3 = digest_lane(h3, pool.vx[k]);
+    }
+    iterate m over pool.vy carrying h4: i64 = h3 {
+        next h4 = digest_lane(h4, pool.vy[m]);
+    }
+    return h4;
+}
+
+// Kinetic-energy proxy: sum of raw squared velocities (exact while lane
+// speeds stay below 2^31 in Q16.16 units, far above the bounce regime).
+fn speed_sum(pool: Pool) -> (result: i64) {
+    iterate i over pool.px carrying e: i64 = 0 {
+        next e = (e +% (pool.vx[i] *% pool.vx[i])) +% (pool.vy[i] *% pool.vy[i]);
+    }
+    return e;
+}
+
+// ---- Conformance probes ----
+
+fn probe_spawn_digest() -> (result: i64) {
+    return pool_digest(spawn());
+}
+
+fn probe_step1_digest() -> (result: i64) {
+    return pool_digest(step_default(spawn()));
+}
+
+fn probe_step16_digest() -> (result: i64) {
+    return pool_digest(steps16(spawn()));
+}
+
+fn probe_step64_digest() -> (result: i64) {
+    return pool_digest(steps64(spawn()));
+}
+
+fn probe_step64_energy() -> (result: i64) {
+    return speed_sum(steps64(spawn()));
+}
+
+fn probe_lane0_x64() -> (result: i64) {
+    let p: Pool = steps64(spawn());
+    return p.px[0];
+}
+
+fn probe_lane0_y64() -> (result: i64) {
+    let p: Pool = steps64(spawn());
+    return p.py[0];
+}
+
+fn probe_lane15_x64() -> (result: i64) {
+    let p: Pool = steps64(spawn());
+    return p.px[15];
+}
