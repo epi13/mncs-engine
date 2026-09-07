@@ -102,6 +102,14 @@ fn fx_from_int(i: i64) -> (result: i64) {
 // exists because i64 `>>` cannot pass body validation today: shift-count
 // literals elaborate as u64 while the body checker demands the count match
 // the value type (see ENG-PRESSURE-0005). Runtime-total for all i64.
+// Narrow a Q32.32-scale product back to Q16.16. Raw `/` truncates toward
+// zero; for a negative product with a nonzero remainder this then adds
+// +1, landing exactly one ABOVE truncation toward zero (e.g.
+// narrow(-4295718050) is -65546, while trunc(-4295718050 / 65536) is
+// -65547). The name says "trunc" but for negative remainders it is
+// neither trunc, floor, nor ceil — model this function exactly as
+// written, NOT as trunc(x / 65536). Exact multiples are unaffected.
+// (see ENG-PRESSURE-0023).
 fn fx_narrow_trunc(x: i64) -> (result: i64) {
     let q: i64 = x / 65536;
     let r: i64 = x % 65536;

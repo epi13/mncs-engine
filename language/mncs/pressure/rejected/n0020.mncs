@@ -1,0 +1,10 @@
+mncs 0.10;
+
+// KNOWN-FAILING reproducer for ENG-PRESSURE-0020: repeat literals are
+// not expressible. See language/mncs/pressure/rejected/README.md;
+// do not "fix" this file.
+module pressure.rejected.n0020;
+fn probe() -> (result: i64) {
+    let r: [i64; 8] = [7; 8];
+    return r[3];
+}

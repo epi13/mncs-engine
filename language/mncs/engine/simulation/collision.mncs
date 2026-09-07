@@ -1,0 +1,248 @@
+mncs 0.10;
+
+// engine.simulation.collision — circle narrow-phase over a fixed 8-disc
+// pool in Q16.16 over i64.
+//
+// Two head-on courses (lanes 0/1 along x, lanes 2/3 along y) plus four
+// static discs. Each step integrates positions with dt = 1, then resolves
+// every unordered pair once (j > i, fixed order, sequential updates):
+// overlap test on d2 < (ri+rj)^2, equal-mass elastic exchange of the
+// normal velocity components, and split positional separation. The normal
+// comes from `isqrt_u64` (floor root; inputs are small, so the 0006
+// high-bit loss cannot trigger). All arithmetic is wrapping and every
+// division truncates, so stepping is total: no traps, no partiality.
+module engine.simulation.collision;
+
+use engine.math.scalar as s;
+
+// Eight-disc pool, structure-of-arrays. Radii ride along so future
+// callers can vary per-lane size; the spawn below uses unit discs.
+record Pool8 { px: [i64; 8], py: [i64; 8], vx: [i64; 8], vy: [i64; 8], r: [i64; 8] }
+
+fn lane_px(k: i64) -> (result: i64) {
+    let v0: i64 = select(k == 0, 131072, 65536);
+    let v1: i64 = select(k == 1, 393216, v0);
+    let v2: i64 = select(k == 2, 262144, v1);
+    let v3: i64 = select(k == 3, 262144, v2);
+    let v4: i64 = select(k == 4, 65536, v3);
+    let v5: i64 = select(k == 5, 458752, v4);
+    let v6: i64 = select(k == 6, 65536, v5);
+    return select(k == 7, 458752, v6);
+}
+
+fn lane_py(k: i64) -> (result: i64) {
+    let v0: i64 = select(k == 0, 262144, 65536);
+    let v1: i64 = select(k == 1, 262144, v0);
+    let v2: i64 = select(k == 2, 131072, v1);
+    let v3: i64 = select(k == 3, 393216, v2);
+    let v4: i64 = select(k == 4, 65536, v3);
+    let v5: i64 = select(k == 5, 65536, v4);
+    let v6: i64 = select(k == 6, 458752, v5);
+    return select(k == 7, 458752, v6);
+}
+
+fn lane_vx(k: i64) -> (result: i64) {
+    let v0: i64 = select(k == 0, 65536, 0);
+    return select(k == 1, 0 - 65536, v0);
+}
+
+fn lane_vy(k: i64) -> (result: i64) {
+    let v0: i64 = select(k == 2, 65536, 0);
+    return select(k == 3, 0 - 65536, v0);
+}
+
+fn spawn_lane(pool: Pool8, i: u64) -> (result: Pool8) {
+    let k: i64 = i as i64;
+    return Pool8 {
+        px: replace(pool.px, i, lane_px(k)),
+        py: replace(pool.py, i, lane_py(k)),
+        vx: replace(pool.vx, i, lane_vx(k)),
+        vy: replace(pool.vy, i, lane_vy(k)),
+        r: replace(pool.r, i, 65536),
+    };
+}
+
+fn spawn() -> (result: Pool8) {
+    let z8: [i64; 8] = [0, 0, 0, 0, 0, 0, 0, 0];
+    let p0: Pool8 = Pool8 { px: z8, py: z8, vx: z8, vy: z8, r: z8 };
+    iterate i over p0.px carrying acc: Pool8 = p0 {
+        next acc = spawn_lane(acc, i);
+    }
+    return acc;
+}
+
+// Overlap predicate shared by resolution and counting.
+fn pair_overlaps(pool: Pool8, i: u64, j: u64) -> (result: bool) {
+    let dx: i64 = pool.px[j] -% pool.px[i];
+    let dy: i64 = pool.py[j] -% pool.py[i];
+    let d2: i64 = s.fx_mul(dx, dx) +% s.fx_mul(dy, dy);
+    let rr: i64 = pool.r[i] +% pool.r[j];
+    return (d2 > 0) && (d2 < s.fx_mul(rr, rr));
+}
+
+// Resolve one unordered pair: exchange normal velocity components
+// (equal masses, elastic) and separate positions by half the overlap
+// each along the contact normal. TOTAL for all inputs: select evaluates
+// both arms (ENG-PRESSURE-0022), and the row loop below evaluates this
+// for every (i, j) including self-pairs, so the distance is floored to a
+// nonzero guard (exact wherever the result is kept: kept pairs have
+// d2 > 0, hence dist16 >= 256) and the resolved pool is returned only
+// under `push` via statement-level `if`.
+fn resolve_pair(pool: Pool8, i: u64, j: u64) -> (result: Pool8) {
+    let dx: i64 = pool.px[j] -% pool.px[i];
+    let dy: i64 = pool.py[j] -% pool.py[i];
+    let d2: i64 = s.fx_mul(dx, dx) +% s.fx_mul(dy, dy);
+    let rr: i64 = pool.r[i] +% pool.r[j];
+    let hit: bool = (d2 > 0) && (d2 < s.fx_mul(rr, rr));
+    let safe_d2: i64 = select(d2 <= 0, 1, d2);
+    let dist8: i64 = s.isqrt_u64(safe_d2 as u64) as i64;
+    let dist16: i64 = dist8 *% 256;
+    let nx: i64 = s.fx_div(dx, dist16);
+    let ny: i64 = s.fx_div(dy, dist16);
+    let dvx: i64 = pool.vx[j] -% pool.vx[i];
+    let dvy: i64 = pool.vy[j] -% pool.vy[i];
+    let rvn: i64 = s.fx_mul(dvx, nx) +% s.fx_mul(dvy, ny);
+    let push: bool = hit && (rvn < 0);
+    let ix: i64 = s.fx_mul(rvn, nx);
+    let iy: i64 = s.fx_mul(rvn, ny);
+    let half: i64 = (rr -% dist16) / 2;
+    let ox: i64 = s.fx_mul(half, nx);
+    let oy: i64 = s.fx_mul(half, ny);
+    if push {
+        let p1: Pool8 = Pool8 {
+            px: replace(pool.px, i, pool.px[i] -% ox),
+            py: replace(pool.py, i, pool.py[i] -% oy),
+            vx: replace(pool.vx, i, pool.vx[i] +% ix),
+            vy: replace(pool.vy, i, pool.vy[i] +% iy),
+            r: pool.r,
+        };
+        return Pool8 {
+            px: replace(p1.px, j, p1.px[j] +% ox),
+            py: replace(p1.py, j, p1.py[j] +% oy),
+            vx: replace(p1.vx, j, p1.vx[j] -% ix),
+            vy: replace(p1.vy, j, p1.vy[j] -% iy),
+            r: p1.r,
+        };
+    }
+    return pool;
+}
+
+fn resolve_row(acc: Pool8, i: u64) -> (result: Pool8) {
+    iterate j over acc.px carrying inner: Pool8 = acc {
+        next inner = select((j > i) && pair_overlaps(inner, i, j), resolve_pair(inner, i, j), inner);
+    }
+    return inner;
+}
+
+fn integrate_lane(pool: Pool8, acc: Pool8, i: u64) -> (result: Pool8) {
+    return Pool8 {
+        px: replace(acc.px, i, pool.px[i] +% s.fx_mul(pool.vx[i], 65536)),
+        py: replace(acc.py, i, pool.py[i] +% s.fx_mul(pool.vy[i], 65536)),
+        vx: acc.vx,
+        vy: acc.vy,
+        r: acc.r,
+    };
+}
+
+fn integrate_all(pool: Pool8) -> (result: Pool8) {
+    iterate i over pool.px carrying acc: Pool8 = pool {
+        next acc = integrate_lane(pool, acc, i);
+    }
+    return acc;
+}
+
+fn resolve_all(pool: Pool8) -> (result: Pool8) {
+    iterate k over pool.px carrying out: Pool8 = pool {
+        next out = resolve_row(out, k);
+    }
+    return out;
+}
+
+fn step(pool: Pool8) -> (result: Pool8) {
+    return resolve_all(integrate_all(pool));
+}
+
+fn step2(pool: Pool8) -> (result: Pool8) {
+    return step(step(pool));
+}
+
+fn step4(pool: Pool8) -> (result: Pool8) {
+    return step2(step2(pool));
+}
+
+fn count_row(pool: Pool8, h: i64, i: u64) -> (result: i64) {
+    iterate j over pool.px carrying acc: i64 = h {
+        next acc = select((j > i) && pair_overlaps(pool, i, j), acc +% 1, acc);
+    }
+    return acc;
+}
+
+fn count_pairs(pool: Pool8) -> (result: i64) {
+    iterate i over pool.px carrying h: i64 = 0 {
+        next h = count_row(pool, h, i);
+    }
+    return h;
+}
+
+fn digest(pool: Pool8) -> (result: i64) {
+    iterate i over pool.px carrying h: i64 = 0 {
+        next h = digest_lane(pool, h, i);
+    }
+    return h;
+}
+
+fn digest_lane(pool: Pool8, h: i64, i: u64) -> (result: i64) {
+    let h0: i64 = (h *% 31) +% pool.px[i];
+    let h1: i64 = (h0 *% 31) +% pool.py[i];
+    let h2: i64 = (h1 *% 31) +% pool.vx[i];
+    let h3: i64 = (h2 *% 31) +% pool.vy[i];
+    return h3;
+}
+
+fn probe_spawn_digest() -> (result: i64) {
+    return digest(spawn());
+}
+// Approach speed of pair (0,2) after integration: relative velocity
+// along the contact normal (negative = approaching). Pins the
+// isqrt-normal computation independently of the impulse math.
+fn probe_pair02_rvn() -> (result: i64) {
+    let pool: Pool8 = integrate_all(spawn());
+    let dx: i64 = pool.px[2] -% pool.px[0];
+    let dy: i64 = pool.py[2] -% pool.py[0];
+    let d2: i64 = s.fx_mul(dx, dx) +% s.fx_mul(dy, dy);
+    let dist8: i64 = s.isqrt_u64(d2 as u64) as i64;
+    let dist16: i64 = dist8 *% 256;
+    let nx: i64 = s.fx_div(dx, dist16);
+    let ny: i64 = s.fx_div(dy, dist16);
+    let dvx: i64 = pool.vx[2] -% pool.vx[0];
+    let dvy: i64 = pool.vy[2] -% pool.vy[0];
+    return s.fx_mul(dvx, nx) +% s.fx_mul(dvy, ny);
+}
+
+fn probe_spawn_pairs() -> (result: i64) {
+    return count_pairs(spawn());
+}
+
+fn probe_step1_digest() -> (result: i64) {
+    return digest(step(spawn()));
+}
+
+fn probe_step1_pairs() -> (result: i64) {
+    return count_pairs(step(spawn()));
+}
+
+fn probe_step2_digest() -> (result: i64) {
+    return digest(step2(spawn()));
+}
+
+fn probe_step4_digest() -> (result: i64) {
+    return digest(step4(spawn()));
+}
+
+fn probe_step4_pairs() -> (result: i64) {
+    return count_pairs(step4(spawn()));
+}
+
+fn probe_lane0_vx_step4() -> (result: i64) {
+    return step4(spawn()).vx[0];
+}

@@ -337,3 +337,291 @@ fn uv_v1() -> (result: SVert) {
 fn uv_v2() -> (result: SVert) {
     return rgb_v2();
 }
+
+// ---- Near-plane + w-floor clipping (ENG-PRESSURE-0012, near part) ----
+//
+// Screen-space SVerts cannot clip exactly (their x/y are post-viewport
+// integers), so clipping works on clip-space CVerts and projects the
+// survivors. Two planes, applied in order:
+//   P0 near:  d = w + z >= 0  (region in front of the near plane)
+//   P1 wfloor: w >= 256       (keeps the perspective divide total; the
+//             floor value 256 (~0.004) is the guard band)
+// A triangle fully inside both planes rasterizes bit-identically to the
+// direct path; fully outside vanishes; straddling yields 1-2 triangles.
+// Far/left/right/top/bottom need no clip stage: NDC outside [-1, 1] maps
+// outside the frame and total framebuffer writes absorb it by design.
+//
+// Fixed topology, no collections: each plane maps one triangle to a
+// ClipOut of 0, 1, or 2 triangles selected from the inside mask. Division
+// in the crossing parameter is guarded (select evaluates both sides, so
+// the discarded branch must be total too): the guard value 1 is exact
+// wherever the result is used, because straddling implies da != db.
+record CVert { x: i64, y: i64, z: i64, w: i64, r: i64, g: i64, b: i64, u: i64, v: i64 }
+
+record ClipOut { n: u64, a0: CVert, a1: CVert, a2: CVert, b0: CVert, b1: CVert, b2: CVert }
+
+fn cvert_zero() -> (result: CVert) {
+    return CVert { x: 0, y: 0, z: 0, w: 0, r: 0, g: 0, b: 0, u: 0, v: 0 };
+}
+
+fn clip_none() -> (result: ClipOut) {
+    let z: CVert = cvert_zero();
+    return ClipOut { n: 0, a0: z, a1: z, a2: z, b0: z, b1: z, b2: z };
+}
+
+fn clip_one(a0: CVert, a1: CVert, a2: CVert) -> (result: ClipOut) {
+    let z: CVert = cvert_zero();
+    return ClipOut { n: 1, a0: a0, a1: a1, a2: a2, b0: z, b1: z, b2: z };
+}
+
+fn clip_two(a0: CVert, a1: CVert, a2: CVert, b0: CVert, b1: CVert, b2: CVert) -> (result: ClipOut) {
+    return ClipOut { n: 2, a0: a0, a1: a1, a2: a2, b0: b0, b1: b1, b2: b2 };
+}
+
+// Crossing parameter of edge a->b for plane distances da, db.
+fn clip_t(da: i64, db: i64) -> (result: i64) {
+    let denom: i64 = da -% db;
+    return s.fx_div(da, select(denom == 0, 1, denom));
+}
+
+fn clip_lerp_1d(a: i64, b: i64, t: i64) -> (result: i64) {
+    return s.fx_lerp(a, b, t);
+}
+
+fn clip_cross(a: CVert, b: CVert, t: i64) -> (result: CVert) {
+    return CVert {
+        x: clip_lerp_1d(a.x, b.x, t),
+        y: clip_lerp_1d(a.y, b.y, t),
+        z: clip_lerp_1d(a.z, b.z, t),
+        w: clip_lerp_1d(a.w, b.w, t),
+        r: clip_lerp_1d(a.r, b.r, t),
+        g: clip_lerp_1d(a.g, b.g, t),
+        b: clip_lerp_1d(a.b, b.b, t),
+        u: clip_lerp_1d(a.u, b.u, t),
+        v: clip_lerp_1d(a.v, b.v, t),
+    };
+}
+
+// Clip one triangle against one plane (inside = dist >= 0). Quad case
+// (two inside) fans into (i0, i1, x12) + (i0, x12, x02).
+fn clip_plane(pa: CVert, pb: CVert, pc: CVert, d0: i64, d1: i64, d2: i64) -> (result: ClipOut) {
+    let z: i64 = 0;
+    let i0: bool = d0 >= z;
+    let i1: bool = d1 >= z;
+    let i2: bool = d2 >= z;
+    if i0 && i1 && i2 {
+        return clip_one(pa, pb, pc);
+    }
+    if i0 && i1 {
+        let x12: CVert = clip_cross(pb, pc, clip_t(d1, d2));
+        let x02: CVert = clip_cross(pa, pc, clip_t(d0, d2));
+        return clip_two(pa, pb, x12, pa, x12, x02);
+    }
+    if i1 && i2 {
+        let x20: CVert = clip_cross(pc, pa, clip_t(d2, d0));
+        let x10: CVert = clip_cross(pb, pa, clip_t(d1, d0));
+        return clip_two(pb, pc, x20, pb, x20, x10);
+    }
+    if i0 && i2 {
+        let x01: CVert = clip_cross(pa, pb, clip_t(d0, d1));
+        let x21: CVert = clip_cross(pc, pb, clip_t(d2, d1));
+        return clip_two(pa, x01, x21, pa, x21, pc);
+    }
+    if i0 {
+        let x01: CVert = clip_cross(pa, pb, clip_t(d0, d1));
+        let x02: CVert = clip_cross(pa, pc, clip_t(d0, d2));
+        return clip_one(pa, x01, x02);
+    }
+    if i1 {
+        let x10: CVert = clip_cross(pb, pa, clip_t(d1, d0));
+        let x12: CVert = clip_cross(pb, pc, clip_t(d1, d2));
+        return clip_one(pb, x10, x12);
+    }
+    if i2 {
+        let x20: CVert = clip_cross(pc, pa, clip_t(d2, d0));
+        let x21: CVert = clip_cross(pc, pb, clip_t(d2, d1));
+        return clip_one(pc, x20, x21);
+    }
+    return clip_none();
+}
+
+fn dist_near(v: CVert) -> (result: i64) {
+    return v.w +% v.z;
+}
+
+fn dist_wfloor(v: CVert) -> (result: i64) {
+    return v.w -% 256;
+}
+
+// Both planes: near first, then the w floor on each surviving triangle.
+fn clip_tri(pa: CVert, pb: CVert, pc: CVert) -> (result: ClipOut) {
+    let first: ClipOut = clip_plane(pa, pb, pc, dist_near(pa), dist_near(pb), dist_near(pc));
+    if first.n == 2 {
+        let s1: ClipOut = clip_plane(first.a0, first.a1, first.a2, dist_wfloor(first.a0), dist_wfloor(first.a1), dist_wfloor(first.a2));
+        let s2: ClipOut = clip_plane(first.b0, first.b1, first.b2, dist_wfloor(first.b0), dist_wfloor(first.b1), dist_wfloor(first.b2));
+        return clip_combine(s1, s2);
+    }
+    if first.n == 1 {
+        return clip_plane(first.a0, first.a1, first.a2, dist_wfloor(first.a0), dist_wfloor(first.a1), dist_wfloor(first.a2));
+    }
+    return clip_none();
+}
+
+// Union of two ClipOuts, capped at 2 triangles: s2 contributes only when
+// s1 is empty (a 2+1 split cannot occur: the near plane yields at most 2
+// triangles and the w floor only shrinks).
+fn clip_combine(s1: ClipOut, s2: ClipOut) -> (result: ClipOut) {
+    if s1.n == 2 {
+        return s1;
+    }
+    if s1.n == 1 {
+        if s2.n == 0 {
+            return s1;
+        }
+        return clip_two(s1.a0, s1.a1, s1.a2, s2.a0, s2.a1, s2.a2);
+    }
+    return s2;
+}
+
+// Project one clipped vertex to screen space (w >= 256 established).
+fn clip_project(v: CVert) -> (result: SVert) {
+    let nx: i64 = s.fx_div(v.x, v.w);
+    let ny: i64 = s.fx_div(v.y, v.w);
+    let nz: i64 = s.fx_div(v.z, v.w);
+    let pt: ScreenPt = viewport(nx, ny);
+    return SVert { x: pt.x, y: pt.y, z: nz, r: v.r, g: v.g, b: v.b, u: v.u, v: v.v, w: v.w };
+}
+
+fn clip_raster_one(frame: RastFrame, setup: TriSetup, o: ClipOut) -> (result: RastFrame) {
+    let s0: SVert = clip_project(o.a0);
+    let s1: SVert = clip_project(o.a1);
+    let s2: SVert = clip_project(o.a2);
+    return raster_guard(frame, tri_setup(s0, s1, s2, setup.color, setup.tex, setup.mode));
+}
+
+fn clip_raster_two(frame: RastFrame, setup: TriSetup, o: ClipOut) -> (result: RastFrame) {
+    let mid: RastFrame = clip_raster_one(frame, setup, o);
+    let t0: SVert = clip_project(o.b0);
+    let t1: SVert = clip_project(o.b1);
+    let t2: SVert = clip_project(o.b2);
+    return raster_guard(mid, tri_setup(t0, t1, t2, setup.color, setup.tex, setup.mode));
+}
+
+// Shared clip entry: mirrors raster_guard's contract (drops CW/degenerate
+// via the projected area test inside raster_guard) with real near-plane
+// clipping for straddling triangles.
+fn clip_entry(frame: RastFrame, setup: TriSetup, qa: CVert, qb: CVert, qc: CVert) -> (result: RastFrame) {
+    let o: ClipOut = clip_tri(qa, qb, qc);
+    if o.n == 2 {
+        return clip_raster_two(frame, setup, o);
+    }
+    if o.n == 1 {
+        return clip_raster_one(frame, setup, o);
+    }
+    return frame;
+}
+
+fn clip_flat(frame: RastFrame, qa: CVert, qb: CVert, qc: CVert, color: i64) -> (result: RastFrame) {
+    let blank_tex: fb.FB16 = fb.blank16(0);
+    let setup: TriSetup = tri_setup(clip_project(qa), clip_project(qb), clip_project(qc), color, blank_tex, 0);
+    return clip_entry(frame, setup, qa, qb, qc);
+}
+
+// Textured triangle with strongly varying w (1.0, 4.0, 1.0) over a
+// two-tone horizontal gradient texture: pins the perspective-correct path
+// with live 1/w weights (an affine path would sample different texels).
+fn probe_persp() -> (result: i64) {
+    let f0: RastFrame = empty_frame();
+    let p0: SVert = SVert { x: 0, y: 0, z: 0, r: 0, g: 0, b: 0, u: 0, v: 0, w: 65536 };
+    let p1: SVert = SVert { x: 15, y: 0, z: 0, r: 0, g: 0, b: 0, u: 65536, v: 0, w: 262144 };
+    let p2: SVert = SVert { x: 0, y: 15, z: 0, r: 0, g: 0, b: 0, u: 0, v: 65536, w: 65536 };
+    let f1: RastFrame = rasterize_textured(f0, p0, p1, p2, grad_tex());
+    return fb.checksum16(f1.fb);
+}
+
+fn probe_persp_left_count() -> (result: i64) {
+    let f0: RastFrame = empty_frame();
+    let p0: SVert = SVert { x: 0, y: 0, z: 0, r: 0, g: 0, b: 0, u: 0, v: 0, w: 65536 };
+    let p1: SVert = SVert { x: 15, y: 0, z: 0, r: 0, g: 0, b: 0, u: 65536, v: 0, w: 262144 };
+    let p2: SVert = SVert { x: 0, y: 15, z: 0, r: 0, g: 0, b: 0, u: 0, v: 65536, w: 65536 };
+    let f1: RastFrame = rasterize_textured(f0, p0, p1, p2, grad_tex());
+    return fb.fb16_count(f1.fb, 4278190335);
+}
+
+// Horizontal two-tone gradient: blue left half, green right half.
+fn grad_tex() -> (result: fb.FB16) {
+    let base: fb.FB16 = fb.blank16(4278190335);
+    iterate r over base.rows carrying acc: fb.FB16 = base {
+        next acc = grad_tex_row(acc, r);
+    }
+    return acc;
+}
+
+fn grad_tex_row(frame: fb.FB16, r: u64) -> (result: fb.FB16) {
+    let row: [i64; 16] = fb.row16(frame, r);
+    iterate c over row carrying out: [i64; 16] = row {
+        next out = replace(out, c, select(c < 8, 4278190335, 16711935));
+    }
+    return fb.set_row16(frame, r, out);
+}
+
+// ---- Clip probes ----
+
+// Clip-space triangle projecting EXACTLY to screen (0,0),(15,0),(0,15)
+// at unit w: ndc -1 -> 0, +1 -> 15, y flipped. Used for the fast-path
+// equivalence check (clip path must equal the direct path bit-for-bit).
+fn clip_sv0() -> (result: CVert) {
+    return CVert { x: 0 - 65536, y: 65536, z: 0, w: 65536, r: 0, g: 0, b: 0, u: 0, v: 0 };
+}
+
+fn clip_sv1() -> (result: CVert) {
+    return CVert { x: 65536, y: 65536, z: 0, w: 65536, r: 0, g: 0, b: 0, u: 65536, v: 0 };
+}
+
+fn clip_sv2() -> (result: CVert) {
+    return CVert { x: 0 - 65536, y: 0 - 65536, z: 0, w: 65536, r: 0, g: 0, b: 0, u: 0, v: 65536 };
+}
+
+// Fully inside: clip path must equal the direct path bit-for-bit.
+fn probe_clip_inside() -> (result: i64) {
+    let f0: RastFrame = empty_frame();
+    let f1: RastFrame = clip_flat(f0, clip_sv0(), clip_sv1(), clip_sv2(), 4294967295);
+    return fb.checksum16(f1.fb);
+}
+
+// One vertex behind the near plane (w + z < 0): partial triangle.
+fn probe_clip_straddle() -> (result: i64) {
+    let f0: RastFrame = empty_frame();
+    let bad: CVert = CVert { x: 0, y: 0, z: 0 - 131072, w: 65536, r: 0, g: 0, b: 0, u: 0, v: 0 };
+    let f1: RastFrame = clip_flat(f0, bad, clip_sv1(), clip_sv2(), 4294967295);
+    return fb.checksum16(f1.fb);
+}
+
+fn probe_clip_straddle_count() -> (result: i64) {
+    let f0: RastFrame = empty_frame();
+    let bad: CVert = CVert { x: 0, y: 0, z: 0 - 131072, w: 65536, r: 0, g: 0, b: 0, u: 0, v: 0 };
+    let f1: RastFrame = clip_flat(f0, bad, clip_sv1(), clip_sv2(), 4294967295);
+    return fb.fb16_count(f1.fb, 4294967295);
+}
+
+// All behind: vanishes.
+fn probe_clip_behind() -> (result: i64) {
+    let f0: RastFrame = empty_frame();
+    let b0: CVert = CVert { x: 0, y: 0, z: 0 - 131072, w: 65536, r: 0, g: 0, b: 0, u: 0, v: 0 };
+    let b1: CVert = CVert { x: 983040, y: 0, z: 0 - 131072, w: 65536, r: 0, g: 0, b: 0, u: 65536, v: 0 };
+    let b2: CVert = CVert { x: 0, y: 983040, z: 0 - 131072, w: 65536, r: 0, g: 0, b: 0, u: 0, v: 65536 };
+    let f1: RastFrame = clip_flat(f0, b0, b1, b2, 4294967295);
+    return fb.checksum16(f1.fb);
+}
+
+// Graze: symmetric positive/negative w pair forces a w=0 crossing. The w
+// floor clips it to w >= 256 instead of dividing by zero: no trap, a
+// deterministic sliver, pinned here.
+fn probe_clip_graze() -> (result: i64) {
+    let f0: RastFrame = empty_frame();
+    let a: CVert = CVert { x: 0 - 65536, y: 65536, z: 0, w: 65536, r: 0, g: 0, b: 0, u: 0, v: 0 };
+    let b: CVert = CVert { x: 65536, y: 65536, z: 0, w: 0 - 65536, r: 0, g: 0, b: 0, u: 65536, v: 0 };
+    let c: CVert = CVert { x: 0 - 65536, y: 0 - 65536, z: 0, w: 65536, r: 0, g: 0, b: 0, u: 0, v: 65536 };
+    let f1: RastFrame = clip_flat(f0, a, b, c, 4294967295);
+    return fb.checksum16(f1.fb);
+}

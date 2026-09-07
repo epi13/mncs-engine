@@ -68,7 +68,7 @@ fn lookat_matrix(eye: v3.Vec3, f: v3.Vec3, s_axis: v3.Vec3) -> (result: ViewResu
 // ENG-PRESSURE-0007), so the divided lanes travel as scalars; make_svert
 // rebuilds the raster vertex at the call site (cross-module record
 // construction itself is total and clean).
-enum ScreenVert { Ok { x: i64, y: i64, z: i64, r: i64, g: i64, b: i64, u: i64, v: i64 }, Clipped }
+enum ScreenVert { Ok { x: i64, y: i64, z: i64, r: i64, g: i64, b: i64, u: i64, v: i64, w: i64 }, Clipped }
 
 // Clip-space homogeneous point to a raster vertex: perspective divide with
 // a w <= 0 guard (behind/on the eye plane clips as a value), viewport
@@ -79,18 +79,18 @@ fn clip_to_screen(clip: v4.Vec4, r: i64, g: i64, b: i64, u: i64, v: i64) -> (res
     }
     return match v4.vec4_homogenize_fx(clip) {
         v4.Homogenized.WZero => ScreenVert.Clipped,
-        v4.Homogenized.Ok { x, y, z } => screen_vert_xyz(x, y, z, r, g, b, u, v),
+        v4.Homogenized.Ok { x, y, z } => screen_vert_xyz(x, y, z, r, g, b, u, v, clip.w),
     };
 }
 
-fn screen_vert_xyz(x: i64, y: i64, z: i64, r: i64, g: i64, b: i64, u: i64, v: i64) -> (result: ScreenVert) {
+fn screen_vert_xyz(x: i64, y: i64, z: i64, r: i64, g: i64, b: i64, u: i64, v: i64, w: i64) -> (result: ScreenVert) {
     let pt: rast.ScreenPt = rast.viewport(x, y);
-    return ScreenVert.Ok { x: pt.x, y: pt.y, z: z, r: r, g: g, b: b, u: u, v: v };
+    return ScreenVert.Ok { x: pt.x, y: pt.y, z: z, r: r, g: g, b: b, u: u, v: v, w: w };
 }
 
 fn make_svert(sv: ScreenVert) -> (result: rast.SVert) {
     return match sv {
-        ScreenVert.Ok { x, y, z, r, g, b, u, v } => rast.SVert { x: x, y: y, z: z, r: r, g: g, b: b, u: u, v: v, w: 65536 },
+        ScreenVert.Ok { x, y, z, r, g, b, u, v, w } => rast.SVert { x: x, y: y, z: z, r: r, g: g, b: b, u: u, v: v, w: w },
         Clipped => rast.SVert { x: 0, y: 0, z: 131072, r: 0, g: 0, b: 0, u: 0, v: 0, w: 65536 },
     };
 }
@@ -131,7 +131,7 @@ fn lookat_m22() -> (result: i64) {
 fn screen_xy() -> (result: i64) {
     let clip: v4.Vec4 = v4.Vec4 { x: 0, y: 0, z: 0, w: 65536 };
     return match clip_to_screen(clip, 0, 0, 0, 0, 0) {
-        ScreenVert.Ok { x, y, z, r, g, b, u, v } => (x *% 16) +% y,
+        ScreenVert.Ok { x, y, z, r, g, b, u, v, w } => (x *% 16) +% y,
         Clipped => 0 - 1,
     };
 }
@@ -144,7 +144,7 @@ fn probe_sv_x() -> (result: i64) {
 fn probe_sv_z() -> (result: i64) {
     let clip: v4.Vec4 = v4.Vec4 { x: 0 - 65536, y: 0 - 65536, z: 174733, w: 262144 };
     return match clip_to_screen(clip, 0, 0, 0, 0, 0) {
-        ScreenVert.Ok { x, y, z, r, g, b, u, v } => z,
+        ScreenVert.Ok { x, y, z, r, g, b, u, v, w } => z,
         Clipped => 0 - 1,
     };
 }
@@ -152,7 +152,7 @@ fn probe_sv_z() -> (result: i64) {
 fn probe_sv_pack() -> (result: i64) {
     let clip: v4.Vec4 = v4.Vec4 { x: 0 - 65536, y: 0 - 65536, z: 174733, w: 262144 };
     return match clip_to_screen(clip, 0, 0, 0, 0, 0) {
-        ScreenVert.Ok { x, y, z, r, g, b, u, v } => (x *% 16) +% y,
+        ScreenVert.Ok { x, y, z, r, g, b, u, v, w } => (x *% 16) +% y,
         Clipped => 0 - 1,
     };
 }
@@ -160,7 +160,7 @@ fn probe_sv_pack() -> (result: i64) {
 fn screen_clipped() -> (result: bool) {
     let clip: v4.Vec4 = v4.Vec4 { x: 0, y: 0, z: 0, w: 0 };
     return match clip_to_screen(clip, 0, 0, 0, 0, 0) {
-        ScreenVert.Ok { x, y, z, r, g, b, u, v } => false,
+        ScreenVert.Ok { x, y, z, r, g, b, u, v, w } => false,
         Clipped => true,
     };
 }

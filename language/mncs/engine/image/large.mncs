@@ -1,0 +1,142 @@
+mncs 0.10;
+
+// engine.image.large — 32x32 and 64x64 frames as nested records.
+//
+// The flat-sequence ceiling is 64 lanes (MNE225), so larger frames nest:
+// FB32 is 32 rows of 32, FB64 is 64 rows of 64 (4096 pixels, the largest
+// square frame expressible: both levels sit at the ceiling). Records wrap
+// the nesting because bare nested sequences are rejected across modules
+// (see ENG-PRESSURE-0011); the same record discipline as FB8/FB16 applies.
+// Row algorithms are Nat-generic over `[i64; W]`; only the descriptors
+// stay concrete (generic records do not exist, ENG-PRESSURE-0018).
+module engine.image.large;
+
+record FB32 { rows: [[i64; 32]; 32] }
+
+record FB64 { rows: [[i64; 64]; 64] }
+
+// Nat-generic row fill used by both frame sizes.
+fn grow_fill<W: Nat>(row: [i64; W], v: i64) -> (result: [i64; W]) {
+    iterate i over row carrying out: [i64; W] = row {
+        next out = replace(out, i, v);
+    }
+    return out;
+}
+
+fn grow_count<W: Nat>(row: [i64; W], v: i64) -> (result: i64) {
+    iterate i over row carrying hits: i64 = 0 {
+        next hits = hits + ((row[i] == v) as i64);
+    }
+    return hits;
+}
+
+fn grow_digest<W: Nat>(row: [i64; W]) -> (result: i64) {
+    iterate i over row carrying h: i64 = 0 {
+        next h = (h *% 31) +% row[i];
+    }
+    return h;
+}
+
+fn row32() -> (result: [i64; 32]) {
+    return [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+}
+
+fn row64() -> (result: [i64; 64]) {
+    return [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+}
+
+fn blank32(v: i64) -> (result: FB32) {
+    let seed: [i64; 32] = row32();
+    let base: [[i64; 32]; 32] = [row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32(), row32()];
+    iterate r over base carrying acc: [[i64; 32]; 32] = base {
+        next acc = replace(acc, r, grow_fill<32>(seed, v));
+    }
+    return FB32 { rows: acc };
+}
+
+fn blank64(v: i64) -> (result: FB64) {
+    let seed: [i64; 64] = row64();
+    let base: [[i64; 64]; 64] = [row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64(), row64()];
+    iterate r over base carrying acc: [[i64; 64]; 64] = base {
+        next acc = replace(acc, r, grow_fill<64>(seed, v));
+    }
+    return FB64 { rows: acc };
+}
+
+fn fb32_count(fb: FB32, v: i64) -> (result: i64) {
+    iterate r over fb.rows carrying hits: i64 = 0 {
+        next hits = hits + grow_count<32>(fb.rows[r], v);
+    }
+    return hits;
+}
+
+fn fb64_count(fb: FB64, v: i64) -> (result: i64) {
+    iterate r over fb.rows carrying hits: i64 = 0 {
+        next hits = hits + grow_count<64>(fb.rows[r], v);
+    }
+    return hits;
+}
+
+fn checksum32(fb: FB32) -> (result: i64) {
+    iterate r over fb.rows carrying h: i64 = 0 {
+        next h = (h *% 31) +% grow_digest<32>(fb.rows[r]);
+    }
+    return h;
+}
+
+fn checksum64(fb: FB64) -> (result: i64) {
+    iterate r over fb.rows carrying h: i64 = 0 {
+        next h = (h *% 31) +% grow_digest<64>(fb.rows[r]);
+    }
+    return h;
+}
+
+// Total indexed access: out-of-bounds observes 0 / keeps the frame.
+fn get32(fb: FB32, r: u64, c: u64) -> (result: i64) {
+    if (r < 32) && (c < 32) {
+        return fb.rows[r][c];
+    }
+    return 0;
+}
+
+fn put32(fb: FB32, r: u64, c: u64, v: i64) -> (result: FB32) {
+    if (r < 32) && (c < 32) {
+        let row: [i64; 32] = replace(fb.rows[r], c, v);
+        return FB32 { rows: replace(fb.rows, r, row) };
+    }
+    return fb;
+}
+
+// ---- Conformance probes ----
+
+fn probe_blank32() -> (result: i64) {
+    return checksum32(blank32(255));
+}
+
+fn probe_count32() -> (result: i64) {
+    return fb32_count(put32(put32(blank32(0), 0, 0, 1), 31, 31, 1), 1);
+}
+
+fn probe_get32() -> (result: i64) {
+    return get32(blank32(9), 31, 31) + get32(blank32(9), 32, 0) + get32(blank32(9), 0, 64);
+}
+
+fn probe_blank64() -> (result: i64) {
+    return checksum64(blank64(255));
+}
+
+fn probe_count64() -> (result: i64) {
+    return fb64_count(blank64(7), 7);
+}
+
+fn probe_put64() -> (result: i64) {
+    return fb64_count(put64(blank64(0), 63, 63, 5), 5);
+}
+
+fn put64(fb: FB64, r: u64, c: u64, v: i64) -> (result: FB64) {
+    if (r < 64) && (c < 64) {
+        let row: [i64; 64] = replace(fb.rows[r], c, v);
+        return FB64 { rows: replace(fb.rows, r, row) };
+    }
+    return fb;
+}

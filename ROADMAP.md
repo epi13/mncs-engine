@@ -37,9 +37,12 @@ equivalence tracked by the matrix (see `tests/known-divergences.json`).
 
 Exit condition: reference images are reproducible and backend comparisons are automated enough to detect regressions.
 
-Status: DONE on the reference backend (`raster-rasterizer` 9/9, checksums
-cross-validated against draw2d and an independent model); matrix automation
-in place via `scripts/conformance.py`.
+Status: DONE on the reference backend (`raster-rasterizer` 16/16:
+checksums cross-validated against draw2d and independent Python
+fixed-point models; campaign-02 added NDC clip goldens
+`clip-inside/straddle/straddle-count/behind/graze` and
+perspective-correct texturing goldens `persp`/`persp-left-count`);
+matrix automation in place via `scripts/conformance.py`.
 
 ## Stage 3 — heterogeneous compute
 
@@ -65,8 +68,12 @@ stage, but there is no dispatch/synchronization/atomics vocabulary.
 Exit condition: one source-level scene is rendered through multiple supported backends with declared tolerances and evidence.
 
 Status: DONE on the reference backend (`scene-scene` 14/14, cube pipeline
-with viewport/corner debug pins); multi-backend rendering tracked by the
-matrix. No tolerances were needed: all backends compared exactly so far.
+with viewport/corner debug pins; campaign-02 re-threaded true clip-space
+`w` through projection and made texture sampling perspective-correct,
+with cube goldens refreshed reference-exact against the Python model);
+multi-backend rendering tracked by the matrix. Comparison is exact except
+the divergences classified in `tests/known-divergences.json` (each with a
+pressure ID); no numeric tolerance band is used anywhere.
 
 ## Stage 5 — simulation pressure
 
@@ -82,6 +89,10 @@ Status: STARTED — particles/boids/fields land this run with cost
 benchmarks (`docs/BENCHMARKS.md`). Scaling wall documented as
 ENG-PRESSURE-0015 (O(n²) is the only expressible neighborhood); cloth,
 fluid, voxel, and ray workloads are future work.
+Campaign-02 increment: circle narrow-phase (`engine.simulation.collision`,
+8-disc pool, isqrt normals, elastic impulse + separation, 9/9
+reference-exact vs an independent fixed-point model); the bisection also
+pinned ENG-PRESSURE-0023 (`fx_narrow_trunc` negative rounding).
 
 ## Stage 6 — cross-generation CUDA pressure
 

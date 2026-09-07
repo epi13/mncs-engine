@@ -1,0 +1,11 @@
+mncs 0.10;
+
+// KNOWN-FAILING reproducer for ENG-PRESSURE-0019: records cannot be
+// generic. See language/mncs/pressure/rejected/README.md;
+// do not "fix" this file.
+module pressure.rejected.n0019;
+record Box<T: Nat> { vals: [i64; T] }
+fn probe() -> (result: i64) {
+    let b: Box<4> = Box { vals: [1, 2, 3, 4] };
+    return b.vals[0];
+}
