@@ -1,0 +1,147 @@
+mncs 0.10;
+
+// engine.math.vec3 — integer 3D vectors with Q16.16 fixed-point extensions.
+// See engine.math.vec2 for the unit discipline: integer lanes by default,
+// Q16.16 lanes inside `fx_*` functions and normalize results.
+module engine.math.vec3;
+
+use engine.math.scalar as s;
+
+record Vec3 { x: i64, y: i64, z: i64 }
+
+fn vec3(x: i64, y: i64, z: i64) -> (result: Vec3) {
+    return Vec3 { x: x, y: y, z: z };
+}
+
+fn vec3_zero() -> (result: Vec3) {
+    return Vec3 { x: 0, y: 0, z: 0 };
+}
+
+fn vec3_add(a: Vec3, b: Vec3) -> (result: Vec3) {
+    return Vec3 { x: a.x +% b.x, y: a.y +% b.y, z: a.z +% b.z };
+}
+
+fn vec3_sub(a: Vec3, b: Vec3) -> (result: Vec3) {
+    return Vec3 { x: a.x -% b.x, y: a.y -% b.y, z: a.z -% b.z };
+}
+
+fn vec3_neg(v: Vec3) -> (result: Vec3) {
+    return Vec3 { x: s.neg_wrap_i64(v.x), y: s.neg_wrap_i64(v.y), z: s.neg_wrap_i64(v.z) };
+}
+
+fn vec3_scale(v: Vec3, k: i64) -> (result: Vec3) {
+    return Vec3 { x: v.x *% k, y: v.y *% k, z: v.z *% k };
+}
+
+fn vec3_dot(a: Vec3, b: Vec3) -> (result: i64) {
+    return ((a.x *% b.x) +% (a.y *% b.y)) +% (a.z *% b.z);
+}
+
+fn vec3_cross(a: Vec3, b: Vec3) -> (result: Vec3) {
+    return Vec3 {
+        x: (a.y *% b.z) -% (a.z *% b.y),
+        y: (a.z *% b.x) -% (a.x *% b.z),
+        z: (a.x *% b.y) -% (a.y *% b.x)
+    };
+}
+
+fn vec3_len2(v: Vec3) -> (result: i64) {
+    return vec3_dot(v, v);
+}
+
+fn vec3_dist2(a: Vec3, b: Vec3) -> (result: u64) {
+    let dx: i64 = a.x -% b.x;
+    let dy: i64 = a.y -% b.y;
+    let dz: i64 = a.z -% b.z;
+    return (((dx *% dx) +% (dy *% dy)) +% (dz *% dz)) as u64;
+}
+
+fn vec3_len_int(v: Vec3) -> (result: u64) {
+    return s.isqrt_u64(vec3_dist2(v, vec3_zero()));
+}
+
+fn vec3_min(a: Vec3, b: Vec3) -> (result: Vec3) {
+    return Vec3 { x: s.min_i64(a.x, b.x), y: s.min_i64(a.y, b.y), z: s.min_i64(a.z, b.z) };
+}
+
+fn vec3_max(a: Vec3, b: Vec3) -> (result: Vec3) {
+    return Vec3 { x: s.max_i64(a.x, b.x), y: s.max_i64(a.y, b.y), z: s.max_i64(a.z, b.z) };
+}
+
+fn vec3_clamp(v: Vec3, lo: Vec3, hi: Vec3) -> (result: Vec3) {
+    return Vec3 { x: s.clamp_i64(v.x, lo.x, hi.x), y: s.clamp_i64(v.y, lo.y, hi.y), z: s.clamp_i64(v.z, lo.z, hi.z) };
+}
+
+fn vec3_equal(a: Vec3, b: Vec3) -> (result: bool) {
+    return ((a.x == b.x) && (a.y == b.y)) && (a.z == b.z);
+}
+
+fn vec3_fx_scale(v: Vec3, k: i64) -> (result: Vec3) {
+    return Vec3 { x: s.fx_mul(v.x, k), y: s.fx_mul(v.y, k), z: s.fx_mul(v.z, k) };
+}
+
+fn vec3_fx_dot(a: Vec3, b: Vec3) -> (result: i64) {
+    return (s.fx_mul(a.x, b.x) +% s.fx_mul(a.y, b.y)) +% s.fx_mul(a.z, b.z);
+}
+
+fn vec3_fx_lerp(a: Vec3, b: Vec3, t: i64) -> (result: Vec3) {
+    return Vec3 { x: s.fx_lerp(a.x, b.x, t), y: s.fx_lerp(a.y, b.y, t), z: s.fx_lerp(a.z, b.z, t) };
+}
+
+// Lambert term: max(dot(n, l), 0) over Q16.16 lanes. Both inputs must be
+// Q16.16 unit-ish vectors; the result is Q16.16 in 0..=1 (exact for
+// non-negative dots, clamped after).
+fn vec3_lambert(n: Vec3, l: Vec3) -> (result: i64) {
+    let d: i64 = vec3_fx_dot(n, l);
+    return select(d < 0, 0, d);
+}
+
+enum Norm3 { Ok { v: Vec3 }, Degenerate }
+
+// Normalize integer lanes to a Q16.16 unit vector (see vec2_normalize).
+fn vec3_normalize(v: Vec3) -> (result: Norm3) {
+    let d2: u64 = vec3_dist2(v, vec3_zero());
+    if d2 == 0 {
+        return Norm3.Degenerate;
+    }
+    let len_fx: i64 = s.fx_from_int(s.isqrt_u64(d2) as i64);
+    return Norm3.Ok {
+        v: Vec3 {
+            x: s.fx_div(s.fx_from_int(v.x), len_fx),
+            y: s.fx_div(s.fx_from_int(v.y), len_fx),
+            z: s.fx_div(s.fx_from_int(v.z), len_fx)
+        }
+    };
+}
+
+// ---- Scalar boundary probes ----
+
+fn vec3_dot_vals(ax: i64, ay: i64, az: i64, bx: i64, by: i64, bz: i64) -> (result: i64) {
+    return vec3_dot(Vec3 { x: ax, y: ay, z: az }, Vec3 { x: bx, y: by, z: bz });
+}
+
+fn vec3_cross_vals(ax: i64, ay: i64, az: i64, bx: i64, by: i64, bz: i64) -> (result: i64) {
+    return vec3_len2(vec3_cross(Vec3 { x: ax, y: ay, z: az }, Vec3 { x: bx, y: by, z: bz }));
+}
+
+fn vec3_len2_vals(x: i64, y: i64, z: i64) -> (result: i64) {
+    return vec3_len2(Vec3 { x: x, y: y, z: z });
+}
+
+fn vec3_norm_x(x: i64, y: i64, z: i64) -> (result: i64) {
+    return match vec3_normalize(Vec3 { x: x, y: y, z: z }) {
+        Norm3.Ok { v } => v.x,
+        Degenerate => 0 - 65536,
+    };
+}
+
+fn vec3_norm_degenerate(x: i64, y: i64, z: i64) -> (result: bool) {
+    return match vec3_normalize(Vec3 { x: x, y: y, z: z }) {
+        Norm3.Ok { v } => false,
+        Degenerate => true,
+    };
+}
+
+fn vec3_lambert_vals(nx: i64, ny: i64, nz: i64, lx: i64, ly: i64, lz: i64) -> (result: i64) {
+    return vec3_lambert(Vec3 { x: nx, y: ny, z: nz }, Vec3 { x: lx, y: ly, z: lz });
+}

@@ -1,0 +1,281 @@
+mncs 0.10;
+
+// engine.math.scalar — total integer scalar helpers and Q16.16 fixed-point
+// arithmetic for graphics and simulation.
+//
+// MNCS has no floating-point type (see ENG-PRESSURE-0002). All fractional
+// engine math uses Q16.16 fixed point carried in i64: real value v is stored
+// as round(v * 65536). Addition/subtraction are exact wrapping integer ops.
+// Multiplication and division carry explicit bounded contracts documented on
+// each function. Integer `>>` on i64 is arithmetic on every backend, which
+// this module relies on for exact halving/floor behavior; `>>` on u64 with
+// the high bit set is avoided because the portable-WASM backend lowers it
+// arithmetically (see ENG-PRESSURE-0001).
+module engine.math.scalar;
+
+// ---- i64 helpers (total, zero unresolved obligations) ----
+
+fn min_i64(a: i64, b: i64) -> (result: i64) {
+    return select(a <= b, a, b);
+}
+
+fn max_i64(a: i64, b: i64) -> (result: i64) {
+    return select(a >= b, a, b);
+}
+
+fn clamp_i64(value: i64, lo: i64, hi: i64) -> (result: i64) {
+    let lower: i64 = select(value < lo, lo, value);
+    return select(lower > hi, hi, lower);
+}
+
+// Saturating absolute value: abs(MIN) is unrepresentable, so it pins at MAX.
+// No MIN literal is needed: x is MIN exactly when x < 0 and (0 -% x) < 0.
+fn abs_sat_i64(x: i64) -> (result: i64) {
+    if x < 0 {
+        let neg: i64 = 0 -% x;
+        return select(neg < 0, 9223372036854775807, neg);
+    }
+    return x;
+}
+
+fn sign_i64(x: i64) -> (result: i64) {
+    if x < 0 {
+        return 0 - 1;
+    }
+    if x > 0 {
+        return 1;
+    }
+    return 0;
+}
+
+// ---- u64 helpers (total, zero unresolved obligations) ----
+
+fn min_u64(a: u64, b: u64) -> (result: u64) {
+    return select(a <= b, a, b);
+}
+
+fn max_u64(a: u64, b: u64) -> (result: u64) {
+    return select(a >= b, a, b);
+}
+
+fn clamp_u64(value: u64, lo: u64, hi: u64) -> (result: u64) {
+    let lower: u64 = select(value < lo, lo, value);
+    return select(lower > hi, hi, lower);
+}
+
+// Absolute difference without any signed conversion.
+fn udiff(a: u64, b: u64) -> (result: u64) {
+    return select(a >= b, a -% b, b -% a);
+}
+
+// 8-bit channel blend with weight t in 0..=255:
+// (a * (255 - t) + b * t) / 255. The divisor is a nonzero literal, so this
+// is runtime-total; the checked-division obligation stays UNKNOWN until a
+// prover discharges literal-divisor facts (see ENG-PRESSURE-0008).
+// Wrapping negation via a typed zero binding: a bare `0 -% x` is rejected
+// because intent-suffixed operators resolve their type from the left operand
+// and a leading literal defaults to i32 (see ENG-PRESSURE-0003).
+fn neg_wrap_i64(x: i64) -> (result: i64) {
+    let z: i64 = 0;
+    return z -% x;
+}
+
+fn lerp255(a: u64, b: u64, t: u64) -> (result: u64) {
+    let full: u64 = 255;
+    let inv: u64 = full -% t;
+    return ((a *% inv) +% (b *% t)) / 255;
+}
+
+// ---- Q16.16 fixed point in i64 ----
+
+// Convert an integer to Q16.16. Exact while |i| <= 2^47 - 1; wraps beyond
+// that (wrapping is total, so no failure, but the value is then wrong by
+// contract — callers must respect the bound).
+fn fx_from_int(i: i64) -> (result: i64) {
+    return i *% 65536;
+}
+
+// Narrow a wide i64 by 2^16 with truncation toward zero. Integer `/` already
+// truncates, so only negative non-multiples need a +1 correction. This helper
+// exists because i64 `>>` cannot pass body validation today: shift-count
+// literals elaborate as u64 while the body checker demands the count match
+// the value type (see ENG-PRESSURE-0005). Runtime-total for all i64.
+fn fx_narrow_trunc(x: i64) -> (result: i64) {
+    let q: i64 = x / 65536;
+    let r: i64 = x % 65536;
+    let z: i64 = 0;
+    let up: i64 = select((x < z) && (r != z), 1, 0);
+    return q +% up;
+}
+
+// Convert Q16.16 to integer by floor. Built from truncating narrowing plus an
+// explicit -1 correction for negative non-integers (so the floor contract
+// holds even though `/` truncates toward zero).
+fn fx_to_int_floor(f: i64) -> (result: i64) {
+    let t: i64 = fx_narrow_trunc(f);
+    let r: i64 = f % 65536;
+    let z: i64 = 0;
+    let down: i64 = select((f < z) && (r != z), 1, 0);
+    return t -% down;
+}
+
+// Convert Q16.16 to integer by round-half-up: floor(f + 0.5).
+fn fx_to_int_round(f: i64) -> (result: i64) {
+    return fx_to_int_floor(f +% 32768);
+}
+
+// Q16.16 multiply with truncation toward zero: narrow((a *% b)). The wrapping
+// product is exact while |a * b| <= 2^63 - 1, i.e. for real-unit operands
+// with |a|,|b| <= 46340. Rounding is truncation toward zero, matching fx_div.
+fn fx_mul(a: i64, b: i64) -> (result: i64) {
+    return fx_narrow_trunc(a *% b);
+}
+
+// Q16.16 divide: (a *% 65536) / b. Contracts: b != 0 (else a checked runtime
+// failure) and |a| <= 2^47 - 1 so the widened numerator does not wrap.
+// Truncates toward zero like integer division.
+fn fx_div(a: i64, b: i64) -> (result: i64) {
+    return (a *% 65536) / b;
+}
+
+// Q16.16 linear interpolation with t in Q16.16 (0..=65536), truncated.
+fn fx_lerp(a: i64, b: i64, t: i64) -> (result: i64) {
+    return a +% fx_narrow_trunc((b -% a) *% t);
+}
+
+fn fx_abs(x: i64) -> (result: i64) {
+    return abs_sat_i64(x);
+}
+
+fn fx_neg(x: i64) -> (result: i64) {
+    return neg_wrap_i64(x);
+}
+
+// Clamp Q16.16 to the unit range 0..=1.
+fn fx_clamp01(x: i64) -> (result: i64) {
+    let lower: i64 = select(x < 0, 0, x);
+    return select(lower > 65536, 65536, lower);
+}
+
+// Clamp Q16.16 to the symmetric range -1..=1.
+fn fx_clamp11(x: i64) -> (result: i64) {
+    let neg_one: i64 = 0 - 65536;
+    let lower: i64 = select(x < neg_one, neg_one, x);
+    return select(lower > 65536, 65536, lower);
+}
+
+// ---- Integer square root (floor), digit-by-digit, 64 fixed steps ----
+
+record ISqrtState { res: u64, op: u64, one: u64 }
+
+// Shrink phase only: move `one` down while it exceeds the remainder, else
+// hold. Shrink and digit work must NOT share one loop: once the digit phase
+// starts, op can drop below one again, and re-shrinking would skip digit
+// levels and inflate the result.
+fn isqrt_shrink(st: ISqrtState) -> (result: ISqrtState) {
+    if st.one > st.op {
+        return ISqrtState { res: st.res, op: st.op, one: st.one >> 2 };
+    }
+    return st;
+}
+
+// Digit phase only: consume exactly one binary digit position per step.
+// `one == 0` holds steady so trailing steps are exact no-ops.
+fn isqrt_digit(st: ISqrtState) -> (result: ISqrtState) {
+    if st.one == 0 {
+        return st;
+    }
+    let trial: u64 = st.res +% st.one;
+    if st.op >= trial {
+        // new_res = (res + 2*one) / 2, computed as (res >> 1) +% one. The
+        // two forms agree on every value this algorithm produces, and this
+        // form never right-shifts a value with bit 63 set: res < 2^33, so
+        // res >> 1 is exact and WASM-safe (see ENG-PRESSURE-0001).
+        return ISqrtState {
+            res: (st.res >> 1) +% st.one,
+            op: st.op -% trial,
+            one: st.one >> 2
+        };
+    }
+    return ISqrtState { res: st.res >> 1, op: st.op, one: st.one >> 2 };
+}
+
+// Counted iteration is bounded by Source Profile 0.4 to `up_to 32` (see
+// ENG-PRESSURE-0004): 32 shrink steps always position `one` (2^62 needs at
+// most 32 halvings to reach 0), then 32 digit steps always finish (2^62 down
+// to 0 is exactly 32 positions) and hold.
+fn isqrt_shrink32(st: ISqrtState) -> (result: ISqrtState) {
+    iterate steps up_to 32 carrying acc: ISqrtState = st {
+        next acc = isqrt_shrink(acc);
+    }
+    return acc;
+}
+
+fn isqrt_digit32(st: ISqrtState) -> (result: ISqrtState) {
+    iterate steps up_to 32 carrying acc: ISqrtState = st {
+        next acc = isqrt_digit(acc);
+    }
+    return acc;
+}
+
+// Floor of the square root of v. Total for all u64; exact by construction.
+fn isqrt_u64(v: u64) -> (result: u64) {
+    let start: ISqrtState = ISqrtState { res: 0, op: v, one: 4611686018427387904 };
+    let shrunk: ISqrtState = isqrt_shrink32(start);
+    let done: ISqrtState = isqrt_digit32(shrunk);
+    return done.res;
+}
+
+// ---- Q16.16 sine/cosine over integer degrees via a 2-degree table ----
+
+// sin(0)..sin(90) in 2-degree steps, Q16.16, rounded. index k -> sin(2k deg).
+fn sin_table(k: u64) -> (result: i64) {
+    let t: [i64; 46] = [0, 2287, 4572, 6850, 9121, 11380, 13626, 15855, 18064, 20252, 22415, 24550, 26656, 28729, 30767, 32768, 34729, 36647, 38521, 40348, 42126, 43852, 45525, 47143, 48703, 50203, 51643, 53020, 54332, 55578, 56756, 57865, 58903, 59870, 60764, 61584, 62328, 62997, 63589, 64104, 64540, 64898, 65177, 65376, 65496, 65536];
+    return t[k];
+}
+
+// Sine of a half-degree angle h (real degrees = h / 2), Q16.16. Accepts any
+// i64; the angle is reduced mod 720 first. Resolution is 0.5 degrees with
+// linear interpolation between 2-degree table entries (one midpoint step).
+fn fx_sin_halfdeg(h: i64) -> (result: i64) {
+    let r: i64 = h % 720;
+    let rn: i64 = r +% select(r < 0, 720, 0);
+    let q: i64 = rn / 180;
+    let rem: i64 = rn % 180;
+    // rem is in half-degrees within the quadrant, 0..179.
+    let k: u64 = (rem / 4) as u64;
+    let f: i64 = rem % 4;
+    let s0: i64 = sin_table(k);
+    let s1: i64 = sin_table(k +% 1);
+    // Rising 0..90 deg in quadrant units: interpolate s0 -> s1 by f/4.
+    let rise: i64 = s0 +% fx_narrow_trunc((s1 -% s0) *% (f *% 16384));
+    // Fold quadrants: sin is +rise, +mirror, -rise, -mirror.
+    let n45: u64 = 45;
+    let n44: u64 = 44;
+    let mirror: i64 = sin_table(n45 -% k);
+    let m1: i64 = mirror -% fx_narrow_trunc((mirror -% sin_table(n44 -% k)) *% (f *% 16384));
+    let quad_value: i64 = select(q == 1, m1, rise);
+    let folded: i64 = select(q == 2, neg_wrap_i64(rise), quad_value);
+    let result: i64 = select(q == 3, neg_wrap_i64(m1), folded);
+    return result;
+}
+
+fn fx_cos_halfdeg(h: i64) -> (result: i64) {
+    return fx_sin_halfdeg(h +% 180);
+}
+
+// Sine of integer degrees, Q16.16.
+fn fx_sin_deg(deg: i64) -> (result: i64) {
+    return fx_sin_halfdeg(deg *% 2);
+}
+
+// Cosine of integer degrees, Q16.16.
+fn fx_cos_deg(deg: i64) -> (result: i64) {
+    return fx_sin_halfdeg((deg *% 2) +% 180);
+}
+
+// Reduce any integer degree angle to 0..=359.
+fn deg_norm(deg: i64) -> (result: i64) {
+    let r: i64 = deg % 360;
+    return r +% select(r < 0, 360, 0);
+}

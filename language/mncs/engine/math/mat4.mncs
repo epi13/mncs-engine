@@ -1,0 +1,111 @@
+mncs 0.10;
+
+// engine.math.mat4 — 4x4 row-major matrices over Q16.16 lanes in i64.
+//
+// A Mat4 is a flat [i64; 16] in row-major order: lane r*4+c holds row r,
+// column c. Flat storage keeps every entry addressable by bounded iteration
+// and keeps matrix values crossing backend boundaries as plain sequences.
+module engine.math.mat4;
+
+use engine.math.scalar as s;
+use engine.math.vec3 as v3;
+use engine.math.vec4 as v4;
+
+fn m4_identity() -> (result: [i64; 16]) {
+    let one: i64 = 65536;
+    let z: i64 = 0;
+    return [one, z, z, z, z, one, z, z, z, z, one, z, z, z, z, one];
+}
+
+fn m4_zero() -> (result: [i64; 16]) {
+    let z: i64 = 0;
+    return [z, z, z, z, z, z, z, z, z, z, z, z, z, z, z, z];
+}
+
+fn m4_get(m: [i64; 16], r: u64, c: u64) -> (result: i64) {
+    return m[(r *% 4) +% c];
+}
+
+fn m4_set(m: [i64; 16], r: u64, c: u64, value: i64) -> (result: [i64; 16]) {
+    return replace(m, (r *% 4) +% c, value);
+}
+
+// Dot of row r of a with column c of b (all Q16.16).
+fn m4_dot_rc(a: [i64; 16], b: [i64; 16], r: u64, c: u64) -> (result: i64) {
+    let base: u64 = r *% 4;
+    let t0: i64 = s.fx_mul(a[base +% 0], b[c +% 0]);
+    let t1: i64 = s.fx_mul(a[base +% 1], b[c +% 4]);
+    let t2: i64 = s.fx_mul(a[base +% 2], b[c +% 8]);
+    let t3: i64 = s.fx_mul(a[base +% 3], b[c +% 12]);
+    return (t0 +% t1) +% (t2 +% t3);
+}
+
+fn m4_mul(a: [i64; 16], b: [i64; 16]) -> (result: [i64; 16]) {
+    return [
+        m4_dot_rc(a, b, 0, 0), m4_dot_rc(a, b, 0, 1), m4_dot_rc(a, b, 0, 2), m4_dot_rc(a, b, 0, 3),
+        m4_dot_rc(a, b, 1, 0), m4_dot_rc(a, b, 1, 1), m4_dot_rc(a, b, 1, 2), m4_dot_rc(a, b, 1, 3),
+        m4_dot_rc(a, b, 2, 0), m4_dot_rc(a, b, 2, 1), m4_dot_rc(a, b, 2, 2), m4_dot_rc(a, b, 2, 3),
+        m4_dot_rc(a, b, 3, 0), m4_dot_rc(a, b, 3, 1), m4_dot_rc(a, b, 3, 2), m4_dot_rc(a, b, 3, 3)
+    ];
+}
+
+// Dot of row r of m with homogeneous vector v (Q16.16).
+fn m4_row_vec(m: [i64; 16], v: v4.Vec4, r: u64) -> (result: i64) {
+    let base: u64 = r *% 4;
+    let t0: i64 = s.fx_mul(m[base +% 0], v.x);
+    let t1: i64 = s.fx_mul(m[base +% 1], v.y);
+    let t2: i64 = s.fx_mul(m[base +% 2], v.z);
+    let t3: i64 = s.fx_mul(m[base +% 3], v.w);
+    return (t0 +% t1) +% (t2 +% t3);
+}
+
+fn m4_mul_vec(m: [i64; 16], v: v4.Vec4) -> (result: v4.Vec4) {
+    return v4.Vec4 {
+        x: m4_row_vec(m, v, 0),
+        y: m4_row_vec(m, v, 1),
+        z: m4_row_vec(m, v, 2),
+        w: m4_row_vec(m, v, 3)
+    };
+}
+
+// Transform a 3D point (w = 1) by a Q16.16 matrix.
+fn m4_transform_point(m: [i64; 16], p: v3.Vec3) -> (result: v4.Vec4) {
+    return m4_mul_vec(m, v4.vec4_point_fx(p));
+}
+
+fn m4_transpose(m: [i64; 16]) -> (result: [i64; 16]) {
+    return [
+        m[0], m[4], m[8], m[12],
+        m[1], m[5], m[9], m[13],
+        m[2], m[6], m[10], m[14],
+        m[3], m[7], m[11], m[15]
+    ];
+}
+
+fn m4_equal(a: [i64; 16], b: [i64; 16]) -> (result: bool) {
+    iterate i over a carrying same: bool = true {
+        next same = same && (a[i] == b[i]);
+    }
+    return same;
+}
+
+// ---- Scalar boundary probes ----
+
+fn m4_entry_identity(r: u64, c: u64) -> (result: i64) {
+    return m4_get(m4_identity(), r, c);
+}
+
+// Entry (r, c) of identity * identity: exercises the full multiply path.
+fn m4_entry_mul_id(r: u64, c: u64) -> (result: i64) {
+    return m4_get(m4_mul(m4_identity(), m4_identity()), r, c);
+}
+
+// x lane of M * (1, 2, 3, 1): exercises the row-vector path with a caller
+// supplied matrix passed as four scalars of its first row plus a diagonal
+// scale s on the remaining diagonal (keeps the corpus scalar).
+fn m4_row0_vec_x(m00: i64, m01: i64, m02: i64, m03: i64, sdiag: i64, x: i64, y: i64, z: i64) -> (result: i64) {
+    let zero: i64 = 0;
+    let m: [i64; 16] = [m00, m01, m02, m03, zero, sdiag, zero, zero, zero, zero, sdiag, zero, zero, zero, zero, sdiag];
+    let v: v4.Vec4 = v4.Vec4 { x: x, y: y, z: z, w: 65536 };
+    return m4_row_vec(m, v, 0);
+}

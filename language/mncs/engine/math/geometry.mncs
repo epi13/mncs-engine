@@ -1,0 +1,142 @@
+mncs 0.10;
+
+// engine.math.geometry — bounding volumes and exact integer geometric
+// predicates over integer coordinates. Orientation and area predicates are
+// exact while their partial products fit i64 (documented per function);
+// barycentric weights are Q16.16 with an explicit degenerate case.
+module engine.math.geometry;
+
+use engine.math.scalar as s;
+use engine.math.vec2 as v2;
+use engine.math.vec3 as v3;
+
+record AABB2 { min: v2.Vec2, max: v2.Vec2 }
+
+record AABB3 { min: v3.Vec3, max: v3.Vec3 }
+
+record Sphere3 { c: v3.Vec3, r: i64 }
+
+fn aabb2(minx: i64, miny: i64, maxx: i64, maxy: i64) -> (result: AABB2) {
+    return AABB2 { min: v2.Vec2 { x: minx, y: miny }, max: v2.Vec2 { x: maxx, y: maxy } };
+}
+
+fn aabb2_contains(b: AABB2, p: v2.Vec2) -> (result: bool) {
+    return ((((p.x >= b.min.x) && (p.x <= b.max.x)) && (p.y >= b.min.y)) && (p.y <= b.max.y));
+}
+
+fn aabb2_intersects(a: AABB2, b: AABB2) -> (result: bool) {
+    return (((a.min.x <= b.max.x) && (b.min.x <= a.max.x)) && ((a.min.y <= b.max.y) && (b.min.y <= a.max.y)));
+}
+
+fn aabb2_union(a: AABB2, b: AABB2) -> (result: AABB2) {
+    return AABB2 {
+        min: v2.Vec2 { x: s.min_i64(a.min.x, b.min.x), y: s.min_i64(a.min.y, b.min.y) },
+        max: v2.Vec2 { x: s.max_i64(a.max.x, b.max.x), y: s.max_i64(a.max.y, b.max.y) }
+    };
+}
+
+fn aabb3_contains(b: AABB3, p: v3.Vec3) -> (result: bool) {
+    return (((((p.x >= b.min.x) && (p.x <= b.max.x)) && (p.y >= b.min.y)) && (p.y <= b.max.y)) && ((p.z >= b.min.z) && (p.z <= b.max.z)));
+}
+
+// Twice the signed area of triangle (a, b, c): positive for counter-
+// clockwise winding. Exact while coordinate differences stay within
+// |d| <= 3037000499 (partial products then fit i64).
+fn orient2d(a: v2.Vec2, b: v2.Vec2, c: v2.Vec2) -> (result: i64) {
+    let abx: i64 = b.x -% a.x;
+    let aby: i64 = b.y -% a.y;
+    let acx: i64 = c.x -% a.x;
+    let acy: i64 = c.y -% a.y;
+    return (abx *% acy) -% (aby *% acx);
+}
+
+fn tri_area2(a: v2.Vec2, b: v2.Vec2, c: v2.Vec2) -> (result: i64) {
+    return s.abs_sat_i64(orient2d(a, b, c));
+}
+
+// Point-in-triangle with boundary-inclusive edges: p is inside when all
+// three edge orientations share a sign (or are zero). Exact under the
+// orient2d contract.
+fn point_in_tri(p: v2.Vec2, a: v2.Vec2, b: v2.Vec2, c: v2.Vec2) -> (result: bool) {
+    let e0: i64 = orient2d(a, b, p);
+    let e1: i64 = orient2d(b, c, p);
+    let e2: i64 = orient2d(c, a, p);
+    let z: i64 = 0;
+    let non_neg: bool = ((e0 >= z) && (e1 >= z)) && (e2 >= z);
+    let non_pos: bool = ((e0 <= z) && (e1 <= z)) && (e2 <= z);
+    return non_neg || non_pos;
+}
+
+enum Bary { Ok { u: i64, v: i64, w: i64 }, Degenerate }
+
+// Barycentric weights of p over triangle (a, b, c) in Q16.16, subtracted
+// from exact integer edge functions: w0 = E01(p)/area etc. Degenerate for
+// zero-area triangles (no division by zero on this path).
+fn bary_fx(p: v2.Vec2, a: v2.Vec2, b: v2.Vec2, c: v2.Vec2) -> (result: Bary) {
+    let area: i64 = orient2d(a, b, c);
+    if area == 0 {
+        return Bary.Degenerate;
+    }
+    let area_fx: i64 = s.fx_from_int(area);
+    let w0: i64 = s.fx_div(s.fx_from_int(orient2d(b, c, p)), area_fx);
+    let w1: i64 = s.fx_div(s.fx_from_int(orient2d(c, a, p)), area_fx);
+    let w2: i64 = s.fx_div(s.fx_from_int(orient2d(a, b, p)), area_fx);
+    return Bary.Ok { u: w0, v: w1, w: w2 };
+}
+
+fn sphere3_contains(sp: Sphere3, p: v3.Vec3) -> (result: bool) {
+    let rr: u64 = (sp.r *% sp.r) as u64;
+    return v3.vec3_dist2(sp.c, p) <= rr;
+}
+
+// Clamp an integer point componentwise into a box.
+fn clamp_point_aabb2(p: v2.Vec2, b: AABB2) -> (result: v2.Vec2) {
+    return v2.vec2_clamp(p, b.min, b.max);
+}
+
+// ---- Scalar boundary probes ----
+
+fn orient_vals(ax: i64, ay: i64, bx: i64, by: i64, cx: i64, cy: i64) -> (result: i64) {
+    return orient2d(
+        v2.Vec2 { x: ax, y: ay },
+        v2.Vec2 { x: bx, y: by },
+        v2.Vec2 { x: cx, y: cy }
+    );
+}
+
+fn point_in_tri_vals(px: i64, py: i64) -> (result: bool) {
+    return point_in_tri(
+        v2.Vec2 { x: px, y: py },
+        v2.Vec2 { x: 0, y: 0 },
+        v2.Vec2 { x: 8, y: 0 },
+        v2.Vec2 { x: 0, y: 8 }
+    );
+}
+
+fn bary_sum(px: i64, py: i64) -> (result: i64) {
+    return match bary_fx(
+        v2.Vec2 { x: px, y: py },
+        v2.Vec2 { x: 0, y: 0 },
+        v2.Vec2 { x: 8, y: 0 },
+        v2.Vec2 { x: 0, y: 8 }
+    ) {
+        Bary.Ok { u, v, w } => (u +% v) +% w,
+        Degenerate => 0 - 1,
+    };
+}
+
+fn bary_degenerate() -> (result: bool) {
+    return match bary_fx(
+        v2.Vec2 { x: 4, y: 4 },
+        v2.Vec2 { x: 0, y: 0 },
+        v2.Vec2 { x: 4, y: 4 },
+        v2.Vec2 { x: 8, y: 8 }
+    ) {
+        Bary.Ok { u, v, w } => false,
+        Degenerate => true,
+    };
+}
+
+fn aabb_hit(minx: i64, miny: i64, maxx: i64, maxy: i64, px: i64, py: i64) -> (result: bool) {
+    return aabb2_contains(aabb2(minx, miny, maxx, maxy), v2.Vec2 { x: px, y: py });
+}

@@ -1,0 +1,1 @@
+{"divergences": [{"backend": "mncs-llvm-ir", "case": "isqrt-max", "corpus": "math-scalar", "pressure": "ENG-PRESSURE-0006"}, {"backend": "mncs-c11", "case": "isqrt-max", "corpus": "math-scalar", "pressure": "ENG-PRESSURE-0006"}]}

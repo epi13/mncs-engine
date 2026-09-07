@@ -1,0 +1,244 @@
+mncs 0.10;
+
+// engine.image.framebuffer — machine-native framebuffers with total,
+// deterministic access semantics.
+//
+// Two canonical sizes (the sequence bound is 64, see ENG-PRESSURE-0004):
+//   FB8  = 8x8 flat, row-major, the fast conformance tile.
+//   FB16 = 16x16 nested rows, the reference frame.
+// Pixels are packed RGBA i64 (see engine.image.color): non-negative and
+// below 2^32. Out-of-bounds reads observe 0 and out-of-bounds writes keep
+// the buffer unchanged, so every function here is total: no traps, no
+// partiality, no ambient state.
+//
+// Framebuffers travel as records, not bare sequences: bare nested sequences
+// in cross-module signatures corrupt (see ENG-PRESSURE-0011), while the same
+// data inside a record crosses every backend exactly.
+module engine.image.framebuffer;
+
+use engine.image.color as color;
+
+record FB8 { px: [i64; 64] }
+
+record FB16 { rows: [[i64; 16]; 16] }
+
+// ---- FB8: 8x8 flat ----
+
+fn blank8(color: i64) -> (result: FB8) {
+    let base: [i64; 64] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+    ];
+    iterate i over base carrying acc: [i64; 64] = base {
+        next acc = replace(acc, i, color);
+    }
+    return FB8 { px: acc };
+}
+
+fn idx8(r: u64, c: u64) -> (result: u64) {
+    return (r *% 8) +% c;
+}
+
+fn in_bounds8(r: u64, c: u64) -> (result: bool) {
+    return (r < 8) && (c < 8);
+}
+
+fn get8(fb: FB8, r: u64, c: u64) -> (result: i64) {
+    if in_bounds8(r, c) {
+        return fb.px[idx8(r, c)];
+    }
+    return 0;
+}
+
+fn set8(fb: FB8, r: u64, c: u64, value: i64) -> (result: FB8) {
+    if in_bounds8(r, c) {
+        return FB8 { px: replace(fb.px, idx8(r, c), value) };
+    }
+    return fb;
+}
+
+fn fb8_equal(a: FB8, b: FB8) -> (result: bool) {
+    iterate i over a.px carrying same: bool = true {
+        next same = same && (a.px[i] == b.px[i]);
+    }
+    return same;
+}
+
+fn fb8_count(fb: FB8, value: i64) -> (result: i64) {
+    iterate i over fb.px carrying hits: i64 = 0 {
+        next hits = hits +% ((fb.px[i] == value) as i64);
+    }
+    return hits;
+}
+
+// Deterministic 64-bit digest: h = h *% 31 +% px in row-major order.
+// Wrapping arithmetic only: total and portable. An integrity checksum, not
+// a cryptographic hash (documented non-goal). May go negative by wrapping;
+// that is part of the digest definition.
+fn checksum8(fb: FB8) -> (result: i64) {
+    iterate i over fb.px carrying h: i64 = 0 {
+        next h = (h *% 31) +% fb.px[i];
+    }
+    return h;
+}
+
+// ---- FB16: 16x16 nested rows ----
+
+fn blank_row16(color: i64) -> (result: [i64; 16]) {
+    let base: [i64; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    iterate i over base carrying row: [i64; 16] = base {
+        next row = replace(row, i, color);
+    }
+    return row;
+}
+
+fn blank16(color: i64) -> (result: FB16) {
+    let row: [i64; 16] = blank_row16(color);
+    let base: [[i64; 16]; 16] = [row, row, row, row, row, row, row, row, row, row, row, row, row, row, row, row];
+    return FB16 { rows: base };
+}
+
+fn in_bounds16(r: u64, c: u64) -> (result: bool) {
+    return (r < 16) && (c < 16);
+}
+
+fn get16(fb: FB16, r: u64, c: u64) -> (result: i64) {
+    if in_bounds16(r, c) {
+        return fb.rows[r][c];
+    }
+    return 0;
+}
+
+fn set16_rc(fb: FB16, r: u64, c: u64, value: i64) -> (result: FB16) {
+    if in_bounds16(r, c) {
+        let row: [i64; 16] = replace(fb.rows[r], c, value);
+        return FB16 { rows: replace(fb.rows, r, row) };
+    }
+    return fb;
+}
+
+fn row16(fb: FB16, r: u64) -> (result: [i64; 16]) {
+    if r < 16 {
+        return fb.rows[r];
+    }
+    return blank_row16(0);
+}
+
+fn set_row16(fb: FB16, r: u64, row: [i64; 16]) -> (result: FB16) {
+    if r < 16 {
+        return FB16 { rows: replace(fb.rows, r, row) };
+    }
+    return fb;
+}
+
+fn row_equal(a: [i64; 16], b: [i64; 16]) -> (result: bool) {
+    iterate i over a carrying same: bool = true {
+        next same = same && (a[i] == b[i]);
+    }
+    return same;
+}
+
+fn fb16_equal(a: FB16, b: FB16) -> (result: bool) {
+    iterate r over a.rows carrying same: bool = true {
+        next same = same && row_equal(a.rows[r], b.rows[r]);
+    }
+    return same;
+}
+
+fn row_count(row: [i64; 16], value: i64) -> (result: i64) {
+    iterate i over row carrying hits: i64 = 0 {
+        next hits = hits +% ((row[i] == value) as i64);
+    }
+    return hits;
+}
+
+fn fb16_count(fb: FB16, value: i64) -> (result: i64) {
+    iterate r over fb.rows carrying hits: i64 = 0 {
+        next hits = hits +% row_count(fb.rows[r], value);
+    }
+    return hits;
+}
+
+// Row digest in h = h *% 31 +% px order; the frame digest folds rows with
+// the same step. Deterministic and order-sensitive; not cryptographic.
+fn row_digest(row: [i64; 16]) -> (result: i64) {
+    iterate i over row carrying h: i64 = 0 {
+        next h = (h *% 31) +% row[i];
+    }
+    return h;
+}
+
+fn checksum16(fb: FB16) -> (result: i64) {
+    iterate r over fb.rows carrying h: i64 = 0 {
+        next h = (h *% 31) +% row_digest(fb.rows[r]);
+    }
+    return h;
+}
+
+// Blit src onto dst at integer offset (ox, oy); source pixels that are fully
+// transparent leave dst unchanged. Pixels outside either frame are skipped
+// by the total get/set semantics, so no explicit clip arithmetic is needed.
+fn blit_pixel(dst: i64, src: i64) -> (result: i64) {
+    return color.blend_fast(src, dst);
+}
+
+fn blit_row(dst_fb: FB16, src: FB16, dst_r: u64, src_r: u64, ox: i64) -> (result: FB16) {
+    let dst_row: [i64; 16] = row16(dst_fb, dst_r);
+    let src_row: [i64; 16] = row16(src, src_r);
+    iterate c over dst_row carrying out: [i64; 16] = dst_row {
+        // `select` evaluates both sides eagerly, so the source read must be
+        // unconditionally in-bounds: clamp first, then discard via `inside`.
+        // Self-blend is not identity for translucent pixels, so the blend
+        // itself is also gated on `inside` rather than fed back.
+        let sc_raw: i64 = (c as i64) -% ox;
+        let sc_lo: i64 = select(sc_raw < 0, 0, sc_raw);
+        let sc_ok: i64 = select(sc_lo > 15, 15, sc_lo);
+        let inside: bool = ((sc_raw >= 0) && (sc_raw < 16)) && ((dst_r < 16) && (src_r < 16));
+        let sp: i64 = src_row[(sc_ok as u64)];
+        next out = replace(out, c, select(inside, blit_pixel(out[c], sp), out[c]));
+    }
+    return set_row16(dst_fb, dst_r, out);
+}
+
+fn blit16(dst: FB16, src: FB16, ox: i64, oy: i64) -> (result: FB16) {
+    iterate r over dst.rows carrying acc: FB16 = dst {
+        let sr: i64 = (r as i64) -% oy;
+        next acc = blit_row(acc, src, r, (sr as u64), ox);
+    }
+    return acc;
+}
+
+// ---- Scalar boundary probes ----
+
+fn set_get16(r: u64, c: u64, value: i64) -> (result: i64) {
+    return get16(set16_rc(blank16(0), r, c, value), r, c);
+}
+
+fn oob_read16(r: u64, c: u64) -> (result: i64) {
+    return get16(blank16(7), r, c);
+}
+
+fn oob_write_keeps(r: u64, c: u64) -> (result: bool) {
+    return fb16_equal(set16_rc(blank16(9), r, c, 12345), blank16(9));
+}
+
+fn count_after_sets() -> (result: i64) {
+    let fb: FB16 = set16_rc(set16_rc(blank16(0), 0, 0, 1), 15, 15, 1);
+    return fb16_count(fb, 1);
+}
+
+fn checksum_blank16() -> (result: i64) {
+    return checksum16(blank16(4278190335));
+}
+
+fn checksum8_black() -> (result: i64) {
+    return checksum8(blank8(255));
+}
+
+fn blit_self_count() -> (result: i64) {
+    let red: FB16 = blank16(4278190335);
+    let dst: FB16 = blit16(blank16(255), red, 0, 0);
+    return fb16_count(dst, 4278190335);
+}

@@ -1,0 +1,356 @@
+mncs 0.10;
+
+// engine.scene.scene — bounded scene orchestration over the reference
+// rasterizer: model/view/projection composition, per-triangle screen
+// projection, and flat / lit / textured cube workloads.
+//
+// The canonical reference workload is cube_frame(angle_deg): one flat-shaded
+// cube rotating about y, rendered through the full model/view/projection
+// composition into FB16. Scenes are fixed small compositions (one cube, two
+// cubes); a general dynamic scene graph needs unbounded object lists
+// (see ENG-PRESSURE-0013).
+module engine.scene.scene;
+
+use engine.math.mat4 as m4;
+use engine.math.vec3 as v3;
+use engine.math.vec4 as v4;
+use engine.math.transform as xf;
+use engine.scene.mesh as mesh;
+use engine.scene.camera as cam;
+use engine.raster.rasterizer as rast;
+use engine.image.framebuffer as fb;
+use engine.image.color as color;
+
+fn default_eye() -> (result: v3.Vec3) {
+    return v3.Vec3 { x: 0, y: 0, z: 327680 };
+}
+
+fn default_target() -> (result: v3.Vec3) {
+    return v3.Vec3 { x: 0, y: 0, z: 0 };
+}
+
+fn default_up() -> (result: v3.Vec3) {
+    return v3.Vec3 { x: 0, y: 65536, z: 0 };
+}
+
+// View * model for a y-rotation of `angle` degrees. Falls back to identity
+// view on BadUp (unreachable with the default camera; the fallback keeps
+// the function total over its matrix output).
+fn view_model(angle: i64) -> (result: [i64; 16]) {
+    let model: [i64; 16] = xf.m4_rot_y(angle);
+    return match cam.lookat(default_eye(), default_target(), default_up()) {
+        cam.ViewResult.Ok { v } => m4.m4_mul(v.m, model),
+        BadUp => model,
+    };
+}
+
+// Full model/view/projection for the canonical cube. Falls back to the
+// view-model product on BadParams (unreachable with valid frustum inputs).
+fn cube_mvp(angle: i64) -> (result: [i64; 16]) {
+    let vm: [i64; 16] = view_model(angle);
+    return match xf.perspective_fov(90, 1, 1, 65536, 655360) {
+        xf.Proj.Ok { p } => m4.m4_mul(p.m, vm),
+        BadParams => vm,
+    };
+}
+
+// Project one cube corner to a screen vertex value.
+fn cube_corner_screen(mvp: [i64; 16], pos_id: i64, r: i64, g: i64, b: i64, u: i64, v: i64) -> (result: cam.ScreenVert) {
+    let clip: v4.Vec4 = m4.m4_transform_point(mvp, mesh.cube_pos((pos_id as u64)));
+    return cam.clip_to_screen(clip, r, g, b, u, v);
+}
+
+// Rasterize triangle t of the cube with a flat color; clipped vertices skip
+// the triangle (no frustum clipping yet — the guard is documented).
+fn draw_cube_tri(frame: rast.RastFrame, mvp: [i64; 16], t: i64, face_color: i64) -> (result: rast.RastFrame) {
+    let i0: i64 = mesh.cube_tri_pos_id(t, 0);
+    let i1: i64 = mesh.cube_tri_pos_id(t, 1);
+    let i2: i64 = mesh.cube_tri_pos_id(t, 2);
+    return match cube_corner_screen(mvp, i0, 0, 0, 0, 0, 0) {
+        cam.ScreenVert.Clipped => frame,
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => draw_cube_tri_1(frame, mvp, t, face_color, x, y, z),
+    };
+}
+
+fn draw_cube_tri_1(frame: rast.RastFrame, mvp: [i64; 16], t: i64, face_color: i64, x0: i64, y0: i64, z0: i64) -> (result: rast.RastFrame) {
+    let i1: i64 = mesh.cube_tri_pos_id(t, 1);
+    let i2: i64 = mesh.cube_tri_pos_id(t, 2);
+    return match cube_corner_screen(mvp, i1, 0, 0, 0, 0, 0) {
+        cam.ScreenVert.Clipped => frame,
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => draw_cube_tri_2(frame, mvp, t, face_color, x0, y0, z0, x, y, z),
+    };
+}
+
+fn draw_cube_tri_2(frame: rast.RastFrame, mvp: [i64; 16], t: i64, face_color: i64, x0: i64, y0: i64, z0: i64, x1: i64, y1: i64, z1: i64) -> (result: rast.RastFrame) {
+    let i2: i64 = mesh.cube_tri_pos_id(t, 2);
+    return match cube_corner_screen(mvp, i2, 0, 0, 0, 0, 0) {
+        cam.ScreenVert.Clipped => frame,
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => draw_cube_tri_3(frame, t, face_color, x0, y0, z0, x1, y1, z1, x, y, z),
+    };
+}
+
+fn draw_cube_tri_3(frame: rast.RastFrame, t: i64, face_color: i64, x0: i64, y0: i64, z0: i64, x1: i64, y1: i64, z1: i64, x2: i64, y2: i64, z2: i64) -> (result: rast.RastFrame) {
+    let s0: rast.SVert = rast.SVert { x: x0, y: y0, z: z0, r: 0, g: 0, b: 0, u: 0, v: 0, w: 65536 };
+    let s1: rast.SVert = rast.SVert { x: x1, y: y1, z: z1, r: 0, g: 0, b: 0, u: 0, v: 0, w: 65536 };
+    let s2: rast.SVert = rast.SVert { x: x2, y: y2, z: z2, r: 0, g: 0, b: 0, u: 0, v: 0, w: 65536 };
+    return rast.rasterize_flat(frame, s0, s1, s2, face_color);
+}
+
+// Triangle keys 0..11 as an [i64; 12] traversal domain ([u64; N] domains
+// are unsupported — see ENG-PRESSURE-0010).
+fn tri_keys() -> (result: [i64; 12]) {
+    return [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+}
+
+// One flat-shaded cube with per-face debug colors.
+fn render_cube_flat(mvp: [i64; 16]) -> (result: rast.RastFrame) {
+    let frame: rast.RastFrame = rast.RastFrame { fb: fb.blank16(255), zb: rast.depth_blank() };
+    let keys: [i64; 12] = tri_keys();
+    iterate k over keys carrying acc: rast.RastFrame = frame {
+        let t: i64 = keys[k];
+        next acc = draw_cube_tri(acc, mvp, t, mesh.cube_face_color(((t / 2) as u64)));
+    }
+    return acc;
+}
+
+// Directional light used by the lit path (upper front right, Q16.16).
+fn light_dir() -> (result: v3.Vec3) {
+    return v3.Vec3 { x: 23500, y: 23500, z: 56600 };
+}
+
+// Shade one packed base color by a Q16.16 lambert term in 0..=65536.
+fn shade_face_color(base: i64, lambert: i64) -> (result: i64) {
+    let r: i64 = (color.unpack_r(base) *% lambert) / 65536;
+    let g: i64 = (color.unpack_g(base) *% lambert) / 65536;
+    let b: i64 = (color.unpack_b(base) *% lambert) / 65536;
+    return color.pack_rgba(r, g, b, 255);
+}
+
+// Rotate a face normal by the model rotation (rotations preserve length, so
+// no renormalization is needed on this path).
+fn rotated_face_normal(angle: i64, f: u64) -> (result: v3.Vec3) {
+    let n: v3.Vec3 = mesh.cube_face_normal(f);
+    let m: [i64; 16] = xf.m4_rot_y(angle);
+    let r: v4.Vec4 = m4.m4_mul_vec(m, v4.Vec4 { x: n.x, y: n.y, z: n.z, w: 0 });
+    return v3.Vec3 { x: r.x, y: r.y, z: r.z };
+}
+
+fn draw_cube_tri_lit(frame: rast.RastFrame, mvp: [i64; 16], t: i64, angle: i64) -> (result: rast.RastFrame) {
+    let f: u64 = ((t / 2) as u64);
+    let lambert: i64 = v3.vec3_lambert(rotated_face_normal(angle, f), light_dir());
+    let shaded: i64 = shade_face_color(mesh.cube_face_color(f), lambert);
+    return draw_cube_tri(frame, mvp, t, shaded);
+}
+
+// One directional-lit cube over white per-face bases.
+fn render_cube_lit(angle: i64, mvp: [i64; 16]) -> (result: rast.RastFrame) {
+    let frame: rast.RastFrame = rast.RastFrame { fb: fb.blank16(255), zb: rast.depth_blank() };
+    let keys: [i64; 12] = tri_keys();
+    iterate k over keys carrying acc: rast.RastFrame = frame {
+        let t: i64 = keys[k];
+        next acc = draw_cube_tri_lit(acc, mvp, t, angle);
+    }
+    return acc;
+}
+
+// ---- Canonical probes (checksums baked from the reference backend) ----
+
+fn cube_frame(angle: i64) -> (result: i64) {
+    return fb.checksum16(render_cube_flat(cube_mvp(angle)).fb);
+}
+
+fn probe_cube_0() -> (result: i64) {
+    return cube_frame(0);
+}
+
+fn probe_cube_15() -> (result: i64) {
+    return cube_frame(15);
+}
+
+fn probe_cube_30() -> (result: i64) {
+    return cube_frame(30);
+}
+
+fn probe_cube_45() -> (result: i64) {
+    return cube_frame(45);
+}
+
+// Red (front-face) pixel count at angle 0: proves the +z face survived
+// culling with outward winding (falls to 0 if winding is inside-out).
+fn probe_cube_front_count() -> (result: i64) {
+    return fb.fb16_count(render_cube_flat(cube_mvp(0)).fb, 4278190335);
+}
+
+fn probe_cube_lit() -> (result: i64) {
+    return fb.checksum16(render_cube_lit(15, cube_mvp(15)).fb);
+}
+
+// Non-background pixel count of the lit cube at angle 0: proves the lit
+// path covers the frame (the lit front face is shaded, never pure red, so
+// a red count would be meaningless here).
+fn probe_cube_lit_coverage() -> (result: i64) {
+    let total: i64 = 256;
+    return total -% fb.fb16_count(render_cube_lit(0, cube_mvp(0)).fb, 255);
+}
+
+// Shared 12-triangle lit-cube draw used by the one- and two-cube scenes.
+fn draw_all_tris(frame: rast.RastFrame, mvp: [i64; 16], angle: i64) -> (result: rast.RastFrame) {
+    let keys: [i64; 12] = tri_keys();
+    iterate k over keys carrying acc: rast.RastFrame = frame {
+        let t: i64 = keys[k];
+        next acc = draw_cube_tri_lit(acc, mvp, t, angle);
+    }
+    return acc;
+}
+
+fn probe_two_cubes() -> (result: i64) {
+    let mvp2: [i64; 16] = cube_mvp_translated(20);
+    let frame: rast.RastFrame = rast.RastFrame { fb: fb.blank16(255), zb: rast.depth_blank() };
+    let one: rast.RastFrame = draw_all_tris(frame, cube_mvp(20), 20);
+    let two: rast.RastFrame = draw_all_tris(one, mvp2, 20);
+    return fb.checksum16(two.fb);
+}
+
+fn cube_mvp_translated(angle: i64) -> (result: [i64; 16]) {
+    let model: [i64; 16] = m4.m4_mul(xf.m4_translate(163840, 0, 0), xf.m4_rot_y(angle));
+    let vm: [i64; 16] = view_model_translated(model);
+    return match xf.perspective_fov(90, 1, 1, 65536, 655360) {
+        xf.Proj.Ok { p } => m4.m4_mul(p.m, vm),
+        BadParams => vm,
+    };
+}
+
+fn view_model_translated(model: [i64; 16]) -> (result: [i64; 16]) {
+    return match cam.lookat(default_eye(), default_target(), default_up()) {
+        cam.ViewResult.Ok { v } => m4.m4_mul(v.m, model),
+        BadUp => model,
+    };
+}
+
+// 2x2 checker texture over FB16 for the textured-cube path.
+fn checker16() -> (result: fb.FB16) {
+    let blank: fb.FB16 = fb.blank16(255);
+    iterate r over blank.rows carrying acc: fb.FB16 = blank {
+        next acc = checker_row(acc, r);
+    }
+    return acc;
+}
+
+fn checker_row(frame: fb.FB16, r: u64) -> (result: fb.FB16) {
+    let white: i64 = 4294967295;
+    let bg: i64 = 255;
+    let row: [i64; 16] = fb.row16(frame, r);
+    iterate c over row carrying out: [i64; 16] = row {
+        let bit: u64 = (((r / 2) +% (c / 2)) % 2);
+        next out = replace(out, c, select(bit == 0, white, bg));
+    }
+    return fb.set_row16(frame, r, out);
+}
+
+// Planar-map cube corner uv packed as u *% 65536 +% v with u = (x+1)/2 and
+// v = (y+1)/2 in Q16.16, exact at the corners (each coordinate lands on
+// 0, 32768, or 65536 with no rounding).
+fn corner_uv(pos_id: i64) -> (result: i64) {
+    let p: v3.Vec3 = mesh.cube_pos((pos_id as u64));
+    let u: i64 = (p.x +% 65536) / 2;
+    let v: i64 = (p.y +% 65536) / 2;
+    return (u *% 65536) +% v;
+}
+
+fn draw_cube_tri_tex(frame: rast.RastFrame, mvp: [i64; 16], t: i64, tex: fb.FB16) -> (result: rast.RastFrame) {
+    let i0: i64 = mesh.cube_tri_pos_id(t, 0);
+    let i1: i64 = mesh.cube_tri_pos_id(t, 1);
+    let i2: i64 = mesh.cube_tri_pos_id(t, 2);
+    let q0: v4.Vec4 = m4.m4_transform_point(mvp, mesh.cube_pos((i0 as u64)));
+    let q1: v4.Vec4 = m4.m4_transform_point(mvp, mesh.cube_pos((i1 as u64)));
+    let q2: v4.Vec4 = m4.m4_transform_point(mvp, mesh.cube_pos((i2 as u64)));
+    return draw_tex_verts(frame, q0, q1, q2, corner_uv(i0), corner_uv(i1), corner_uv(i2), tex);
+}
+
+fn draw_tex_verts(frame: rast.RastFrame, q0: v4.Vec4, q1: v4.Vec4, q2: v4.Vec4, uv0: i64, uv1: i64, uv2: i64, tex: fb.FB16) -> (result: rast.RastFrame) {
+    return match cam.clip_to_screen(q0, 0, 0, 0, uv0 / 65536, uv0 % 65536) {
+        cam.ScreenVert.Clipped => frame,
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => draw_tex_verts_1(frame, q1, q2, uv1, uv2, tex, x, y, z, u, v),
+    };
+}
+
+fn draw_tex_verts_1(frame: rast.RastFrame, q1: v4.Vec4, q2: v4.Vec4, uv1: i64, uv2: i64, tex: fb.FB16, x0: i64, y0: i64, z0: i64, u0: i64, v0: i64) -> (result: rast.RastFrame) {
+    return match cam.clip_to_screen(q1, 0, 0, 0, uv1 / 65536, uv1 % 65536) {
+        cam.ScreenVert.Clipped => frame,
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => draw_tex_verts_2(frame, q2, uv2, tex, x0, y0, z0, u0, v0, x, y, z, u, v),
+    };
+}
+
+fn draw_tex_verts_2(frame: rast.RastFrame, q2: v4.Vec4, uv2: i64, tex: fb.FB16, x0: i64, y0: i64, z0: i64, u0: i64, v0: i64, x1: i64, y1: i64, z1: i64, u1: i64, v1: i64) -> (result: rast.RastFrame) {
+    return match cam.clip_to_screen(q2, 0, 0, 0, uv2 / 65536, uv2 % 65536) {
+        cam.ScreenVert.Clipped => frame,
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => draw_tex_tri(frame, tex, x0, y0, z0, u0, v0, x1, y1, z1, u1, v1, x, y, z, u, v),
+    };
+}
+
+fn draw_tex_tri(frame: rast.RastFrame, tex: fb.FB16, x0: i64, y0: i64, z0: i64, u0: i64, v0: i64, x1: i64, y1: i64, z1: i64, u1: i64, v1: i64, x2: i64, y2: i64, z2: i64, u2: i64, v2: i64) -> (result: rast.RastFrame) {
+    let s0: rast.SVert = rast.SVert { x: x0, y: y0, z: z0, r: 0, g: 0, b: 0, u: u0, v: v0, w: 65536 };
+    let s1: rast.SVert = rast.SVert { x: x1, y: y1, z: z1, r: 0, g: 0, b: 0, u: u1, v: v1, w: 65536 };
+    let s2: rast.SVert = rast.SVert { x: x2, y: y2, z: z2, r: 0, g: 0, b: 0, u: u2, v: v2, w: 65536 };
+    return rast.rasterize_textured(frame, s0, s1, s2, tex);
+}
+
+fn render_cube_textured(angle: i64, mvp: [i64; 16], tex: fb.FB16) -> (result: rast.RastFrame) {
+    let frame: rast.RastFrame = rast.RastFrame { fb: fb.blank16(255), zb: rast.depth_blank() };
+    let keys: [i64; 12] = tri_keys();
+    iterate k over keys carrying acc: rast.RastFrame = frame {
+        let t: i64 = keys[k];
+        next acc = draw_cube_tri_tex(acc, mvp, t, tex);
+    }
+    return acc;
+}
+
+fn probe_cube_textured() -> (result: i64) {
+    return fb.checksum16(render_cube_textured(20, cube_mvp(20), checker16()).fb);
+}
+
+// ---- Pipeline debug probes (kept: they pin each stage's contract) ----
+
+fn dbg_view_z() -> (result: i64) {
+    return m4.m4_transform_point(view_model(0), mesh.cube_pos(4)).z;
+}
+
+fn dbg_mvp0() -> (result: i64) {
+    return cube_mvp(0)[0];
+}
+
+fn dbg_mvp10() -> (result: i64) {
+    return cube_mvp(0)[10];
+}
+
+fn dbg_corner4() -> (result: i64) {
+    return match cube_corner_screen(cube_mvp(0), 4, 0, 0, 0, 0, 0) {
+        cam.ScreenVert.Clipped => 0 - 1,
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => (x *% 16) +% y,
+    };
+}
+
+fn dbg_tri0_area() -> (result: i64) {
+    let mvp: [i64; 16] = cube_mvp(0);
+    let va: cam.ScreenVert = cube_corner_screen(mvp, 4, 0, 0, 0, 0, 0);
+    let vb: cam.ScreenVert = cube_corner_screen(mvp, 6, 0, 0, 0, 0, 0);
+    let vc: cam.ScreenVert = cube_corner_screen(mvp, 5, 0, 0, 0, 0, 0);
+    return match va {
+        cam.ScreenVert.Clipped => 0 - 1000,
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => dbg_tri0_area_1(vb, vc, x, y),
+    };
+}
+
+fn dbg_tri0_area_1(vb: cam.ScreenVert, vc: cam.ScreenVert, ax: i64, ay: i64) -> (result: i64) {
+    return match vb {
+        cam.ScreenVert.Clipped => 0 - 2000,
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => dbg_tri0_area_2(vc, ax, ay, x, y),
+    };
+}
+
+fn dbg_tri0_area_2(vc: cam.ScreenVert, ax: i64, ay: i64, bx: i64, by: i64) -> (result: i64) {
+    return match vc {
+        cam.ScreenVert.Clipped => 0 - 3000,
+        cam.ScreenVert.Ok { x, y, z, r, g, b, u, v } => ((((bx -% ax) *% (y -% ay)) -% ((by -% ay) *% (x -% ax)))),
+    };
+}

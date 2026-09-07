@@ -1,0 +1,176 @@
+mncs 0.10;
+
+// engine.image.color — packed RGBA color over non-negative i64.
+//
+// A pixel is one i64 holding 0xRRGGBBAA (R in bits 24..31, G in 16..23, B
+// in 8..15, A in 0..7); all pixel values stay below 2^32. Pixels are i64
+// rather than u64 for two structural reasons:
+//   1. `[u64; N]` cannot serve as an iteration domain today (MNB101, see
+//      ENG-PRESSURE-0010), while `[i64; N]` traverses on every backend.
+//   2. i64 values never set bit 63 here, so the portable-WASM unsigned-`>>`
+//      lowering fault (see ENG-PRESSURE-0001) cannot trigger.
+// Packing uses wrapping multiply/add only (total, zero obligations);
+// unpacking uses division/modulo by literal powers of two (runtime-total;
+// the checked-division obligations stay UNKNOWN). Integer `|`/`&` do not
+// exist in MNCS (byte-only); arithmetic replaces them (ENG-PRESSURE-0009).
+module engine.image.color;
+
+use engine.math.scalar as s;
+
+// Pack four 0..255 channels into 0xRRGGBBAA. Callers must keep channels in
+// range (mask beforehand); out-of-range channels wrap by contract.
+fn pack_rgba(r: i64, g: i64, b: i64, a: i64) -> (result: i64) {
+    return (((r *% 16777216) +% (g *% 65536)) +% ((b *% 256) +% a));
+}
+
+fn unpack_r(px: i64) -> (result: i64) {
+    return px / 16777216;
+}
+
+fn unpack_g(px: i64) -> (result: i64) {
+    return (px / 65536) % 256;
+}
+
+fn unpack_b(px: i64) -> (result: i64) {
+    return (px / 256) % 256;
+}
+
+fn unpack_a(px: i64) -> (result: i64) {
+    return px % 256;
+}
+
+// Keep one channel in 0..255.
+fn clamp_channel(v: i64) -> (result: i64) {
+    return s.clamp_i64(v, 0, 255);
+}
+
+// Pack with per-channel clamping (total for all i64 inputs).
+fn pack_clamped(r: i64, g: i64, b: i64, a: i64) -> (result: i64) {
+    return pack_rgba(clamp_channel(r), clamp_channel(g), clamp_channel(b), clamp_channel(a));
+}
+
+// Standard palette entries (opaque).
+fn black() -> (result: i64) {
+    return pack_rgba(0, 0, 0, 255);
+}
+
+fn white() -> (result: i64) {
+    return pack_rgba(255, 255, 255, 255);
+}
+
+fn transparent() -> (result: i64) {
+    return pack_rgba(0, 0, 0, 0);
+}
+
+fn red() -> (result: i64) {
+    return pack_rgba(255, 0, 0, 255);
+}
+
+fn green() -> (result: i64) {
+    return pack_rgba(0, 255, 0, 255);
+}
+
+fn blue() -> (result: i64) {
+    return pack_rgba(0, 0, 255, 255);
+}
+
+fn is_opaque(px: i64) -> (result: bool) {
+    return unpack_a(px) == 255;
+}
+
+fn is_transparent(px: i64) -> (result: bool) {
+    return unpack_a(px) == 0;
+}
+
+// Per-channel linear interpolation between packed pixels with weight t in
+// 0..255. Alpha interpolates like any other channel.
+fn color_lerp(a: i64, b: i64, t: i64) -> (result: i64) {
+    return pack_rgba(
+        channel_lerp(unpack_r(a), unpack_r(b), t),
+        channel_lerp(unpack_g(a), unpack_g(b), t),
+        channel_lerp(unpack_b(a), unpack_b(b), t),
+        channel_lerp(unpack_a(a), unpack_a(b), t)
+    );
+}
+
+// 8-bit channel blend: (x * (255 - t) + y * t) / 255 with a nonzero literal
+// divisor (runtime-total).
+fn channel_lerp(x: i64, y: i64, t: i64) -> (result: i64) {
+    let full: i64 = 255;
+    let inv: i64 = full -% t;
+    return ((x *% inv) +% (y *% t)) / 255;
+}
+
+// Porter-Duff source-over with non-premultiplied inputs. All divisions are
+// by the literal 255 (runtime-total). Result alpha: a_s + a_d*(255-a_s)/255.
+fn blend_src_over(src: i64, dst: i64) -> (result: i64) {
+    let sa: i64 = unpack_a(src);
+    let da: i64 = unpack_a(dst);
+    let full: i64 = 255;
+    let inv_sa: i64 = full -% sa;
+    let out_a: i64 = (sa +% ((da *% inv_sa) / 255)) % 256;
+    // out_c = (src_c * sa + dst_c * da * (255 - sa) / 255) / out_a, with the
+    // out_a == 0 case defined as transparent black (fully clear result).
+    if out_a == 0 {
+        return transparent();
+    }
+    let r: i64 = (((unpack_r(src) *% sa) +% (((unpack_r(dst) *% da) *% inv_sa) / 255)) / out_a) % 256;
+    let g: i64 = (((unpack_g(src) *% sa) +% (((unpack_g(dst) *% da) *% inv_sa) / 255)) / out_a) % 256;
+    let b: i64 = (((unpack_b(src) *% sa) +% (((unpack_b(dst) *% da) *% inv_sa) / 255)) / out_a) % 256;
+    return pack_rgba(r, g, b, out_a);
+}
+
+// Fast path when src is opaque: result is src. When src is transparent:
+// result is dst. Otherwise the full operator.
+fn blend_fast(src: i64, dst: i64) -> (result: i64) {
+    if is_opaque(src) {
+        return src;
+    }
+    if is_transparent(src) {
+        return dst;
+    }
+    return blend_src_over(src, dst);
+}
+
+// ITU-R BT.601 luma rounded to a gray channel, packed opaque.
+fn grayscale(px: i64) -> (result: i64) {
+    let y: i64 = (((unpack_r(px) *% 77) +% ((unpack_g(px) *% 150) +% (unpack_b(px) *% 29))) / 256) % 256;
+    return pack_rgba(y, y, y, 255);
+}
+
+// Per-channel inversion, preserving alpha.
+fn invert(px: i64) -> (result: i64) {
+    let full: i64 = 255;
+    return pack_rgba(full -% unpack_r(px), full -% unpack_g(px), full -% unpack_b(px), unpack_a(px));
+}
+
+// RGB565 packing (5/6/5 bits) for memory-pressure experiments.
+fn pack_rgb565(r: i64, g: i64, b: i64) -> (result: i64) {
+    return (((r / 8) *% 2048) +% ((g / 4) *% 32)) +% (b / 8);
+}
+
+fn unpack565_r(v: i64) -> (result: i64) {
+    return ((v / 2048) % 32) *% 8;
+}
+
+fn unpack565_g(v: i64) -> (result: i64) {
+    return ((v / 32) % 64) *% 4;
+}
+
+fn unpack565_b(v: i64) -> (result: i64) {
+    return (v % 32) *% 8;
+}
+
+// ---- Scalar boundary probes ----
+
+fn pack_vals(r: i64, g: i64, b: i64, a: i64) -> (result: i64) {
+    return pack_rgba(r, g, b, a);
+}
+
+fn blend_vals(sr: i64, sg: i64, sb: i64, sa: i64, dst: i64) -> (result: i64) {
+    return blend_src_over(pack_rgba(sr, sg, sb, sa), dst);
+}
+
+fn gray_val(r: i64, g: i64, b: i64) -> (result: i64) {
+    return unpack_r(grayscale(pack_rgba(r, g, b, 255)));
+}

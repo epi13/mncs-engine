@@ -1,0 +1,131 @@
+mncs 0.10;
+
+// engine.math.quat — Q16.16 unit quaternions for rotation. Lanes are Q16.16
+// in i64: q = (x, y, z, w) with x^2 + y^2 + z^2 + w^2 = 1 for rotations.
+module engine.math.quat;
+
+use engine.math.scalar as s;
+use engine.math.mat4 as m4;
+use engine.math.vec3 as v3;
+
+record Quat { x: i64, y: i64, z: i64, w: i64 }
+
+fn quat_identity() -> (result: Quat) {
+    return Quat { x: 0, y: 0, z: 0, w: 65536 };
+}
+
+// Rotation of `deg` integer degrees about a Q16.16 axis. The half-angle in
+// half-degree units is exactly `deg`, so the sine table loses no resolution
+// on this path (see engine.math.scalar). The axis should be unit length;
+// this function does not normalize it (use quat_normalize on the result for
+// a guaranteed unit quaternion).
+fn quat_from_axis_angle_deg(ax: i64, ay: i64, az: i64, deg: i64) -> (result: Quat) {
+    let sn: i64 = s.fx_sin_halfdeg(deg);
+    let cs: i64 = s.fx_cos_halfdeg(deg);
+    return Quat { x: s.fx_mul(ax, sn), y: s.fx_mul(ay, sn), z: s.fx_mul(az, sn), w: cs };
+}
+
+fn quat_conj(q: Quat) -> (result: Quat) {
+    return Quat { x: s.neg_wrap_i64(q.x), y: s.neg_wrap_i64(q.y), z: s.neg_wrap_i64(q.z), w: q.w };
+}
+
+fn quat_mul(a: Quat, b: Quat) -> (result: Quat) {
+    return Quat {
+        x: ((s.fx_mul(a.w, b.x) +% s.fx_mul(a.x, b.w)) +% s.fx_mul(a.y, b.z)) -% s.fx_mul(a.z, b.y),
+        y: ((s.fx_mul(a.w, b.y) +% s.fx_mul(a.y, b.w)) +% s.fx_mul(a.z, b.x)) -% s.fx_mul(a.x, b.z),
+        z: ((s.fx_mul(a.w, b.z) +% s.fx_mul(a.z, b.w)) +% s.fx_mul(a.x, b.y)) -% s.fx_mul(a.y, b.x),
+        w: ((s.fx_mul(a.w, b.w) -% s.fx_mul(a.x, b.x)) -% s.fx_mul(a.y, b.y)) -% s.fx_mul(a.z, b.z)
+    };
+}
+
+// Squared norm in Q16.16 (dot with self).
+fn quat_norm2(q: Quat) -> (result: i64) {
+    return ((s.fx_mul(q.x, q.x) +% s.fx_mul(q.y, q.y)) +% s.fx_mul(q.z, q.z)) +% s.fx_mul(q.w, q.w);
+}
+
+enum QNorm { Ok { q: Quat }, Degenerate }
+
+fn quat_normalize(q: Quat) -> (result: QNorm) {
+    let n2: i64 = quat_norm2(q);
+    if n2 == 0 {
+        return QNorm.Degenerate;
+    }
+    // len = sqrt(n2) in Q16.16: n2 is Q16.16 (value n2/65536), so
+    // sqrt(n2/65536) * 65536 = sqrt(n2 * 65536), floored. n2 > 0 here and
+    // small for unit-ish quaternions, so n2 *% 65536 cannot wrap. Both
+    // conversions are exact for these non-negative values.
+    let len: i64 = s.isqrt_u64((n2 *% 65536) as u64) as i64;
+    return QNorm.Ok {
+        q: Quat {
+            x: s.fx_div(q.x, len),
+            y: s.fx_div(q.y, len),
+            z: s.fx_div(q.z, len),
+            w: s.fx_div(q.w, len)
+        }
+    };
+}
+
+// Rotate a Q16.16 vector by a unit quaternion: v' = q * v * q*.
+fn quat_rotate_vec(q: Quat, v: v3.Vec3) -> (result: v3.Vec3) {
+    let c: Quat = quat_conj(q);
+    let p: Quat = Quat { x: v.x, y: v.y, z: v.z, w: 0 };
+    let t: Quat = quat_mul(q, p);
+    let r: Quat = quat_mul(t, c);
+    return v3.Vec3 { x: r.x, y: r.y, z: r.z };
+}
+
+// Unit quaternion to a Q16.16 rotation matrix (row-major, no translation).
+fn quat_to_mat4(q: Quat) -> (result: [i64; 16]) {
+    let one: i64 = 65536;
+    let z: i64 = 0;
+    let xx: i64 = s.fx_mul(q.x, q.x);
+    let yy: i64 = s.fx_mul(q.y, q.y);
+    let zz: i64 = s.fx_mul(q.z, q.z);
+    let xy: i64 = s.fx_mul(q.x, q.y);
+    let xz: i64 = s.fx_mul(q.x, q.z);
+    let yz: i64 = s.fx_mul(q.y, q.z);
+    let wx: i64 = s.fx_mul(q.w, q.x);
+    let wy: i64 = s.fx_mul(q.w, q.y);
+    let wz: i64 = s.fx_mul(q.w, q.z);
+    let two: i64 = 131072;
+    return [
+        one -% s.fx_mul(two, yy +% zz), s.fx_mul(two, xy -% wz), s.fx_mul(two, xz +% wy), z,
+        s.fx_mul(two, xy +% wz), one -% s.fx_mul(two, xx +% zz), s.fx_mul(two, yz -% wx), z,
+        s.fx_mul(two, xz -% wy), s.fx_mul(two, yz +% wx), one -% s.fx_mul(two, xx +% yy), z,
+        z, z, z, one
+    ];
+}
+
+// ---- Scalar boundary probes ----
+
+fn quat_id_mul_w() -> (result: i64) {
+    let q: Quat = quat_from_axis_angle_deg(0, 0, 65536, 180);
+    let r: Quat = quat_mul(quat_identity(), q);
+    return r.w;
+}
+
+// x lane of rotating (1, 0, 0) by 180 degrees about z: exact -1 in Q16.16.
+fn quat_rot180_z_x() -> (result: i64) {
+    let q: Quat = quat_from_axis_angle_deg(0, 0, 65536, 180);
+    let r: v3.Vec3 = quat_rotate_vec(q, v3.Vec3 { x: 65536, y: 0, z: 0 });
+    return r.x;
+}
+
+// y lane of the same rotation: exact 0.
+fn quat_rot180_z_y() -> (result: i64) {
+    let q: Quat = quat_from_axis_angle_deg(0, 0, 65536, 180);
+    let r: v3.Vec3 = quat_rotate_vec(q, v3.Vec3 { x: 65536, y: 0, z: 0 });
+    return r.y;
+}
+
+fn quat_mat_entry_180(r: u64, c: u64) -> (result: i64) {
+    let q: Quat = quat_from_axis_angle_deg(0, 0, 65536, 180);
+    return m4.m4_get(quat_to_mat4(q), r, c);
+}
+
+fn quat_norm_bad() -> (result: bool) {
+    return match quat_normalize(Quat { x: 0, y: 0, z: 0, w: 0 }) {
+        QNorm.Ok { q } => false,
+        Degenerate => true,
+    };
+}
