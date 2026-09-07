@@ -85,10 +85,12 @@ Pressure campaign 01 (this run): 25 corpora, all passing on
 transform/quat/geometry), image (color/framebuffer), render/draw2d,
 rasterizer, scene (mesh/camera/cube scene), simulation
 (particles/boids/fields), two rendered examples, one cost benchmark,
-and the pressure regression pins. The 5-backend matrix
-(`scripts/conformance.py --matrix`) tracks reference/WASM/LLVM-IR/C11/
-Cranelift equivalence with classified known divergences in
-`tests/known-divergences.json`. The pressure ledger (`docs/PRESSURE.md`)
+and the pressure regression pins. The 5-backend matrix (25 corpora ×
+reference/WASM/LLVM-IR/C11/Cranelift = 125 cells) stands at 121 PASS +
+4 classified known divergences (`tests/known-divergences.json`:
+`math-scalar#isqrt-max` on LLVM-IR/C11 under ENG-PRESSURE-0006,
+`pressure-shr-u64` on WASM under ENG-PRESSURE-0001), zero unclassified
+failures. Run it with `scripts/conformance.py --matrix`. The pressure ledger (`docs/PRESSURE.md`)
 holds ENG-PRESSURE-0001..0015 with minimized reproducers; two entries
 were refined by evidence this run (0006 is u64 argument high-bit loss,
 not isqrt; 0011 is elaboration rejection, not corruption) and one did
