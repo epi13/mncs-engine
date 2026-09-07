@@ -1,0 +1,14 @@
+mncs 0.10;
+
+// KNOWN-FAILING reproducer for ENG-PRESSURE-0007: cross-module record payload.
+// See language/mncs/pressure/rejected/README.md; do not "fix" this file.
+module pressure.rejected.n0007;
+use pressure.rejected.n0007lib as lib;
+enum E { Ok { r: lib.Ext }, Bad }
+fn probe() -> (result: i64) {
+    let e: E = E.Ok { r: lib.Ext { v: 3 } };
+    return match e {
+        E.Ok { r } => lib.get(r),
+        Bad => 0,
+    };
+}

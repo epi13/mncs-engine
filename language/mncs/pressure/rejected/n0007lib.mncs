@@ -1,0 +1,6 @@
+mncs 0.10;
+module pressure.rejected.n0007lib;
+record Ext { v: i64 }
+fn get(r: Ext) -> (result: i64) {
+    return r.v;
+}

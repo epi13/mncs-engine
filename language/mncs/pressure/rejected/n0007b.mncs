@@ -1,0 +1,13 @@
+mncs 0.10;
+
+// KNOWN-FAILING reproducer for ENG-PRESSURE-0007: bare-sequence enum payload.
+// See language/mncs/pressure/rejected/README.md; do not "fix" this file.
+module pressure.rejected.n0007b;
+enum E { Ok { m: [i64; 4] }, Bad }
+fn probe() -> (result: i64) {
+    let e: E = E.Ok { m: [1, 2, 3, 4] };
+    return match e {
+        E.Ok { m } => m[0],
+        Bad => 0,
+    };
+}
