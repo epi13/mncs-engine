@@ -1,0 +1,30 @@
+mncs 0.10;
+
+// Minimized reproducer for ENG-PRESSURE-0007: enum payloads cannot carry a
+// record declared in another module, nor a bare sequence at all. Both
+// workarounds below compile and run; the direct forms are rejected.
+// Rejected: `enum E { Ok { m: [i64; 16] }, Bad }` and cross-module
+// `enum E { Ok { r: other_mod.Rec }, Bad }`.
+module pressure.enum_payload;
+
+record ProjMat { m: [i64; 16] }
+
+enum Proj { Ok { p: ProjMat }, BadParams }
+
+enum Split { Ok { x: i64, y: i64, z: i64 }, WZero }
+
+fn probe_wrapped() -> (result: i64) {
+    let m: Proj = Proj.Ok { p: ProjMat { m: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7] } };
+    return match m {
+        Proj.Ok { p } => p.m[15],
+        BadParams => 0 - 1,
+    };
+}
+
+fn probe_split() -> (result: i64) {
+    let s: Split = Split.Ok { x: 1, y: 2, z: 3 };
+    return match s {
+        Split.Ok { x, y, z } => (x +% y) +% z,
+        WZero => 0,
+    };
+}

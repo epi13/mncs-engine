@@ -72,9 +72,11 @@ fn udiff(a: u64, b: u64) -> (result: u64) {
 // (a * (255 - t) + b * t) / 255. The divisor is a nonzero literal, so this
 // is runtime-total; the checked-division obligation stays UNKNOWN until a
 // prover discharges literal-divisor facts (see ENG-PRESSURE-0008).
-// Wrapping negation via a typed zero binding: a bare `0 -% x` is rejected
-// because intent-suffixed operators resolve their type from the left operand
-// and a leading literal defaults to i32 (see ENG-PRESSURE-0003).
+// Wrapping negation via a typed zero binding. This was required because
+// intent-suffixed operators resolve their type from the left operand and a
+// leading literal defaulted to i32; the rejection no longer reproduces on
+// the current compiler (see ENG-PRESSURE-0003), but the binding is retained
+// defensively until upstream confirms the relaxation.
 fn neg_wrap_i64(x: i64) -> (result: i64) {
     let z: i64 = 0;
     return z -% x;

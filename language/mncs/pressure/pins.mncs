@@ -1,0 +1,83 @@
+mncs 0.10;
+
+// Committed regression net over the pressure workarounds: one probe per
+// minimized reproducer in this directory, so the backend matrix pins the
+// workaround behaviors. The reproducer modules stay the minimized units
+// for upstream reports; this module only delegates.
+module pressure.pins;
+
+use pressure.fixed_point as p0002;
+use pressure.lit_suffix as p0003;
+use pressure.up_to32 as p0004;
+use pressure.shr_i64 as p0005;
+use pressure.enum_payload as p0007;
+use pressure.div_oblig as p0008;
+use pressure.bitops as p0009;
+use pressure.seq_domain as p0010;
+// pressure.nested_seq is deliberately NOT imported here: merely importing a
+// module whose signatures carry bare nested sequences poisons elaboration
+// (see ENG-PRESSURE-0011). It is pinned by its own corpus instead.
+use pressure.clip_guard as p0012;
+use pressure.fixed_pool as p0013;
+use pressure.hash_stream as p0014;
+use pressure.neighborhood as p0015;
+
+fn probe_fmul() -> (result: i64) {
+    return p0002.probe_fmul();
+}
+
+fn probe_negwrap() -> (result: i64) {
+    return p0003.probe_neg_wrap_val();
+}
+
+fn probe_barelit() -> (result: i64) {
+    return p0003.probe_bare_literal_val();
+}
+
+fn probe_chain64() -> (result: i64) {
+    return p0004.probe_chained64();
+}
+
+fn probe_half() -> (result: i64) {
+    return p0005.probe_half_val();
+}
+
+fn probe_wrapped() -> (result: i64) {
+    return p0007.probe_wrapped();
+}
+
+fn probe_split() -> (result: i64) {
+    return p0007.probe_split();
+}
+
+fn probe_divlit() -> (result: i64) {
+    return p0008.probe_div_literal();
+}
+
+fn probe_chlerp() -> (result: i64) {
+    return p0008.probe_channel_lerp();
+}
+
+fn probe_unpackb() -> (result: i64) {
+    return p0009.probe_unpack_b_val();
+}
+
+fn probe_seqsum() -> (result: i64) {
+    return p0010.probe_sum();
+}
+
+fn probe_wzero() -> (result: i64) {
+    return p0012.probe_wzero_dropped();
+}
+
+fn probe_pingpong() -> (result: i64) {
+    return p0013.probe_pingpong();
+}
+
+fn probe_stream4() -> (result: i64) {
+    return p0014.probe_stream4();
+}
+
+fn probe_nbcounts() -> (result: i64) {
+    return p0015.probe_counts();
+}

@@ -1,0 +1,25 @@
+mncs 0.10;
+
+// Regression pin for ENG-PRESSURE-0003: intent-suffixed operators with a
+// leading literal were reported to reject (left-operand type resolution
+// with literals defaulting to i32). The rejection no longer reproduces —
+// all forms below elaborate — so this module pins the relaxed behavior.
+// If the compiler regresses, probe_neg_wrap_val is the tripwire.
+module pressure.lit_suffix;
+
+fn probe_neg_wrap(x: i64) -> (result: i64) {
+    let z: i64 = 0;
+    return z -% x;
+}
+
+fn probe_neg_wrap_val() -> (result: i64) {
+    return probe_neg_wrap(5);
+}
+
+fn probe_bare_literal(x: i64, y: i64) -> (result: i64) {
+    return 0 -% x;
+}
+
+fn probe_bare_literal_val() -> (result: i64) {
+    return probe_bare_literal(5, 0);
+}

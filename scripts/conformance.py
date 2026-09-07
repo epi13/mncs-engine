@@ -55,13 +55,20 @@ def module_root(corpus_path):
     target = corpus["cases"][0]["request"]["target"]["module"]
     parts = target.split(".")
     # engine.<area>.<mod> -> language/mncs/engine/<area>/<mod>.mncs
-    assert parts[0] == "engine", target
+    # pressure.<mod> -> language/mncs/pressure/<mod>.mncs
+    assert parts[0] in ("engine", "pressure"), target
     stem = parts[-1]
-    area = parts[1] if len(parts) > 2 else parts[1]
-    candidates = [
-        os.path.join(ENGINE_ROOT, "language", "mncs", "engine",
-                     area, stem + ".mncs"),
-    ]
+    if parts[0] == "pressure":
+        candidates = [
+            os.path.join(ENGINE_ROOT, "language", "mncs", "pressure",
+                         stem + ".mncs"),
+        ]
+    else:
+        area = parts[1] if len(parts) > 2 else parts[1]
+        candidates = [
+            os.path.join(ENGINE_ROOT, "language", "mncs", "engine",
+                         area, stem + ".mncs"),
+        ]
     for cand in candidates:
         if os.path.exists(cand):
             return cand

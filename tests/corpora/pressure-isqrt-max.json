@@ -1,0 +1,1 @@
+{"schema_version": "0.1", "name": "engine-pressure-isqrt-max", "cases": [{"id": "isqrt-max", "request": {"schema_version": "0.1", "target": {"module": "pressure.isqrt_max", "function": "probe_isqrt_max"}, "arguments": [], "step_budget": 8000000}, "expected": [{"integer": {"value": 4294967295, "type": {"bits": 64, "signed": false}}}], "expected_status": "returned"}]}

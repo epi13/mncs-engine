@@ -1,0 +1,14 @@
+mncs 0.10;
+
+// Minimized reproducer for ENG-PRESSURE-0009: integer `|`/`&` do not exist
+// in MNCS (byte-only), so channel extraction must use division/modulo
+// arithmetic. Desired: `(px >> 8) & 255`.
+module pressure.bitops;
+
+fn probe_unpack_b(px: i64) -> (result: i64) {
+    return (px / 256) % 256;
+}
+
+fn probe_unpack_b_val() -> (result: i64) {
+    return probe_unpack_b(4278190335);
+}

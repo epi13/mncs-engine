@@ -1,0 +1,27 @@
+mncs 0.10;
+
+// Minimized reproducer for ENG-PRESSURE-0012: there is no frustum clipping,
+// only a w <= 0 guard that drops the whole triangle. A triangle straddling
+// the eye plane vanishes instead of clipping. Desired: a clipped-triangle
+// primitive assembly stage.
+module pressure.clip_guard;
+
+use engine.raster.rasterizer as rast;
+use engine.image.framebuffer as fb;
+
+fn fb_blank() -> (result: fb.FB16) {
+    return fb.blank16(255);
+}
+
+fn fb_checksum(frame: rast.RastFrame) -> (result: i64) {
+    return fb.checksum16(frame.fb);
+}
+
+fn probe_wzero_dropped() -> (result: i64) {
+    let clear: rast.RastFrame = rast.RastFrame { fb: fb_blank(), zb: rast.depth_blank() };
+    let bad: rast.SVert = rast.SVert { x: 0, y: 0, z: 0, r: 255, g: 0, b: 0, u: 0, v: 0, w: 0 };
+    let v1: rast.SVert = rast.SVert { x: 15, y: 0, z: 0, r: 255, g: 0, b: 0, u: 0, v: 0, w: 65536 };
+    let v2: rast.SVert = rast.SVert { x: 0, y: 15, z: 0, r: 255, g: 0, b: 0, u: 0, v: 0, w: 65536 };
+    let out: rast.RastFrame = rast.rasterize_flat(clear, bad, v1, v2, 4294967295);
+    return fb_checksum(out);
+}

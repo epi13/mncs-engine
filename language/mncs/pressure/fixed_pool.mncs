@@ -1,0 +1,20 @@
+mncs 0.10;
+
+// Minimized reproducer for ENG-PRESSURE-0013: no unbounded sequences, so a
+// pool cannot grow or shrink — lanes recycle through a fixed-size
+// structure-of-arrays with a single-pass update (cf.
+// engine.simulation.particles at 16 lanes).
+module pressure.fixed_pool;
+
+record Pool8 { a: [i64; 8], b: [i64; 8] }
+
+fn probe_pingpong() -> (result: i64) {
+    let p0: Pool8 = Pool8 { a: [1, 2, 3, 4, 5, 6, 7, 8], b: [0, 0, 0, 0, 0, 0, 0, 0] };
+    iterate i over p0.a carrying acc: Pool8 = p0 {
+        next acc = Pool8 { a: acc.a, b: replace(acc.b, i, acc.a[i] +% 100) };
+    }
+    iterate j over acc.b carrying h: i64 = 0 {
+        next h = (h *% 31) +% acc.b[j];
+    }
+    return h;
+}

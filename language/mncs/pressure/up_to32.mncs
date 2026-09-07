@@ -1,0 +1,19 @@
+mncs 0.10;
+
+// Minimized reproducer for ENG-PRESSURE-0004: counted iteration is bounded
+// by Source Profile 0.4 to `up_to 32`, so a 64-step loop must be spelled
+// as two chained 32-step runs. Desired (unexpressible): a single
+// `iterate i up_to 64` pass.
+module pressure.up_to32;
+
+fn add32(acc: i64) -> (result: i64) {
+    iterate i up_to 32 carrying h: i64 = acc {
+        next h = h +% 1;
+    }
+    return h;
+}
+
+// 32 + 32 chained counted steps.
+fn probe_chained64() -> (result: i64) {
+    return add32(add32(0));
+}

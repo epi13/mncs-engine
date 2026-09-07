@@ -1,0 +1,18 @@
+mncs 0.10;
+
+// Minimized reproducer for ENG-PRESSURE-0014: MNCS has no RNG facility, so
+// stochastic emitters must be driven by caller-supplied hash streams. This
+// counter-hashed stream (multiply/add only, portable by construction) is
+// the current stand-in pattern: stream(k) is a pure function of the
+// counter, reproducible on every backend.
+module pressure.hash_stream;
+
+fn stream_word(k: i64, seed: i64) -> (result: i64) {
+    let h: i64 = (k *% 374761393) +% (seed *% 974711);
+    let m: i64 = h *% (h +% 3266489917);
+    return ((m % 256) +% 256) % 256;
+}
+
+fn probe_stream4() -> (result: i64) {
+    return (((stream_word(0, 7) *% 31) +% stream_word(1, 7)) *% 31) +% stream_word(2, 7);
+}

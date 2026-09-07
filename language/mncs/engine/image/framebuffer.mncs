@@ -12,8 +12,9 @@ mncs 0.10;
 // partiality, no ambient state.
 //
 // Framebuffers travel as records, not bare sequences: bare nested sequences
-// in cross-module signatures corrupt (see ENG-PRESSURE-0011), while the same
-// data inside a record crosses every backend exactly.
+// in cross-module signatures are rejected at elaboration (see
+// ENG-PRESSURE-0011), while the same data inside a record crosses every
+// backend exactly.
 module engine.image.framebuffer;
 
 use engine.image.color as color;

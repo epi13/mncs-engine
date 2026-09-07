@@ -1,0 +1,24 @@
+mncs 0.10;
+
+// Minimized reproducer for ENG-PRESSURE-0015: no spatial index or map
+// structure exists, so neighborhoods cost an O(n^2) distance fold. Four
+// lanes on a unit lattice, radius squared 2: lanes 0 and 1 see each other,
+// lane 3 is lone. Desired: a uniform-grid or hash-map neighbor query.
+module pressure.neighborhood;
+
+record Lanes { px: [i64; 4], py: [i64; 4] }
+
+fn count_lane(lanes: Lanes, i: u64) -> (result: i64) {
+    iterate j over lanes.px carrying n: i64 = 0 {
+        let dx: i64 = lanes.px[j] -% lanes.px[i];
+        let dy: i64 = lanes.py[j] -% lanes.py[i];
+        let near: bool = (((dx *% dx) +% (dy *% dy)) < 2) && (i != j);
+        next n = n +% select(near, 1, 0);
+    }
+    return n;
+}
+
+fn probe_counts() -> (result: i64) {
+    let lanes: Lanes = Lanes { px: [0, 1, 5, 9], py: [0, 0, 5, 9] };
+    return ((((count_lane(lanes, 0) *% 31) +% count_lane(lanes, 1)) *% 31) +% count_lane(lanes, 3));
+}
