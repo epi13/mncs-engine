@@ -91,7 +91,7 @@ reference/WASM/LLVM-IR/C11/Cranelift = 125 cells) stands at 121 PASS +
 `math-scalar#isqrt-max` on LLVM-IR/C11 under ENG-PRESSURE-0006,
 `pressure-shr-u64` on WASM under ENG-PRESSURE-0001), zero unclassified
 failures. Run it with `scripts/conformance.py --matrix`. The pressure ledger (`docs/PRESSURE.md`)
-holds ENG-PRESSURE-0001..0015 with minimized reproducers; two entries
+holds ENG-PRESSURE-0001..0017 with minimized reproducers; two entries
 were refined by evidence this run (0006 is u64 argument high-bit loss,
 not isqrt; 0011 is elaboration rejection, not corruption) and one did
 not reproduce (0003). Deliberately unproven: PTX/GPU execution, Fabric

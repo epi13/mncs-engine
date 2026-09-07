@@ -66,7 +66,7 @@ Exit condition: one source-level scene is rendered through multiple supported ba
 
 Status: DONE on the reference backend (`scene-scene` 14/14, cube pipeline
 with viewport/corner debug pins); multi-backend rendering tracked by the
-matrix. No tolerances were needed: all backends compared exactly so far.
+matrix. Comparison is exact except the divergences classified in `tests/known-divergences.json` (each with a pressure ID); no numeric tolerance band is used anywhere.
 
 ## Stage 5 — simulation pressure
 
