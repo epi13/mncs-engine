@@ -1,0 +1,40 @@
+mncs 0.10;
+
+// example.flock — boid flock rendered to FB16: the scattered sixteen-lane
+// flock from engine.simulation.boids, steered by cohesion/alignment/
+// separation, plotted as white pixels on opaque black at three timestamps.
+module example.flock;
+
+use engine.math.scalar as s;
+use engine.image.framebuffer as fb;
+use engine.simulation.boids as boids;
+use engine.simulation.particles as part;
+
+fn plot_lane(frame: fb.FB16, pool: part.Pool, i: u64) -> (result: fb.FB16) {
+    let xi: i64 = s.clamp_i64(s.fx_to_int_floor(pool.px[i]), 0, 15);
+    let yi: i64 = s.clamp_i64(s.fx_to_int_floor(pool.py[i]), 0, 15);
+    return fb.set16_rc(frame, (yi as u64), (xi as u64), 4294967295);
+}
+
+fn render_pool(pool: part.Pool) -> (result: fb.FB16) {
+    iterate i over pool.px carrying frame: fb.FB16 = fb.blank16(255) {
+        next frame = plot_lane(frame, pool, i);
+    }
+    return frame;
+}
+
+fn probe_frame0() -> (result: i64) {
+    return fb.checksum16(render_pool(boids.scatter()));
+}
+
+fn probe_frame8() -> (result: i64) {
+    return fb.checksum16(render_pool(boids.flock8(boids.scatter())));
+}
+
+fn probe_frame16() -> (result: i64) {
+    return fb.checksum16(render_pool(boids.flock16(boids.scatter())));
+}
+
+fn probe_lit16() -> (result: i64) {
+    return fb.fb16_count(render_pool(boids.flock16(boids.scatter())), 4294967295);
+}

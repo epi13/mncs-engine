@@ -56,12 +56,22 @@ def module_root(corpus_path):
     parts = target.split(".")
     # engine.<area>.<mod> -> language/mncs/engine/<area>/<mod>.mncs
     # pressure.<mod> -> language/mncs/pressure/<mod>.mncs
-    assert parts[0] in ("engine", "pressure"), target
+    # example.<mod> -> examples/<mod>.mncs
+    # bench.<mod> -> benches/<mod>.mncs
+    assert parts[0] in ("engine", "pressure", "example", "bench"), target
     stem = parts[-1]
     if parts[0] == "pressure":
         candidates = [
             os.path.join(ENGINE_ROOT, "language", "mncs", "pressure",
                          stem + ".mncs"),
+        ]
+    elif parts[0] == "example":
+        candidates = [
+            os.path.join(ENGINE_ROOT, "examples", stem + ".mncs"),
+        ]
+    elif parts[0] == "bench":
+        candidates = [
+            os.path.join(ENGINE_ROOT, "benches", stem + ".mncs"),
         ]
     else:
         area = parts[1] if len(parts) > 2 else parts[1]

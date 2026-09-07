@@ -1,0 +1,41 @@
+mncs 0.10;
+
+// example.fountain — particle fountain rendered to FB16: sixteen gravity
+// lanes spawned by engine.simulation.particles, integrated with the default
+// downward gravity, and plotted as white pixels on opaque black. Each
+// example is a standalone program (the small render helper is duplicated
+// rather than shared, so examples stay individually upstreamable).
+module example.fountain;
+
+use engine.math.scalar as s;
+use engine.image.framebuffer as fb;
+use engine.simulation.particles as part;
+
+fn plot_lane(frame: fb.FB16, pool: part.Pool, i: u64) -> (result: fb.FB16) {
+    let xi: i64 = s.clamp_i64(s.fx_to_int_floor(pool.px[i]), 0, 15);
+    let yi: i64 = s.clamp_i64(s.fx_to_int_floor(pool.py[i]), 0, 15);
+    return fb.set16_rc(frame, (yi as u64), (xi as u64), 4294967295);
+}
+
+fn render_pool(pool: part.Pool) -> (result: fb.FB16) {
+    iterate i over pool.px carrying frame: fb.FB16 = fb.blank16(255) {
+        next frame = plot_lane(frame, pool, i);
+    }
+    return frame;
+}
+
+fn probe_frame0() -> (result: i64) {
+    return fb.checksum16(render_pool(part.spawn()));
+}
+
+fn probe_frame8() -> (result: i64) {
+    return fb.checksum16(render_pool(part.steps8(part.spawn())));
+}
+
+fn probe_frame32() -> (result: i64) {
+    return fb.checksum16(render_pool(part.steps32(part.spawn())));
+}
+
+fn probe_lit32() -> (result: i64) {
+    return fb.fb16_count(render_pool(part.steps32(part.spawn())), 4294967295);
+}

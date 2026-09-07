@@ -1,0 +1,41 @@
+mncs 0.10;
+
+// bench.pool — deterministic cost benchmarks over simulation workloads.
+// Each probe is a fixed workload with a baked digest golden; the runner's
+// reported `steps` field is the cost model (reference backend). Recorded
+// reference costs live in docs/BENCHMARKS.md; compare across backends by
+// running the same corpus elsewhere.
+module bench.pool;
+
+use engine.image.framebuffer as fb;
+use engine.simulation.particles as part;
+use engine.simulation.boids as boids;
+use engine.simulation.fields as fields;
+
+fn steps128(pool: part.Pool) -> (result: part.Pool) {
+    return part.steps64(part.steps64(pool));
+}
+
+fn steps256(pool: part.Pool) -> (result: part.Pool) {
+    return steps128(steps128(pool));
+}
+
+fn flock32(pool: part.Pool) -> (result: part.Pool) {
+    return boids.flock16(boids.flock16(pool));
+}
+
+// 256 gravity steps over 16 lanes.
+fn probe_fountain256() -> (result: i64) {
+    return part.pool_digest(steps256(part.spawn()));
+}
+
+// 32 flocking steps (each an O(n^2) neighborhood fold over 16 lanes).
+fn probe_flock32() -> (result: i64) {
+    return part.pool_digest(flock32(boids.scatter()));
+}
+
+// Full 16x16 two-octave heightmap render (cross-module agreement with the
+// simulation-fields golden is part of the check).
+fn probe_heightmap() -> (result: i64) {
+    return fb.checksum16(fields.heightmap(7));
+}
