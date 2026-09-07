@@ -1,0 +1,27 @@
+mncs 0.8;
+
+// Bootstrap executable pressure probe for mncs-engine.
+// Keep this file intentionally small: it establishes that engine work begins
+// in MNCS Language before higher-level graphics abstractions are introduced.
+module engine.foundation.probe;
+
+fn clamp_channel(value: i64) -> (result: i64) {
+    if value < 0 {
+        return 0;
+    }
+    if value > 255 {
+        return 255;
+    }
+    return value;
+}
+
+fn linear_index(x: i64, y: i64, width: i64) -> (result: i64) {
+    return (y * width) + x;
+}
+
+fn rgba_sum(pixel: [i64; 4]) -> (result: i64) {
+    iterate i over pixel carrying total: i64 = 0 {
+        next total = total + pixel[i];
+    }
+    return total;
+}
