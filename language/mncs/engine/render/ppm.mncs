@@ -1,0 +1,86 @@
+mncs 0.10;
+
+// engine.render.ppm — exact binary PPM (P6) serialization of engine frames.
+//
+// The ENTIRE file format lives here in MNCS: magic, ASCII header, and raw
+// RGB triples are computed into exact-size nested byte buffers. The 64-lane
+// sequence ceiling (MNE225) shapes the representation, not the content:
+//   - 8x8:  [byte; 11] header ("P6\n8 8\n255\n") + [[byte; 3]; 64] body
+//   - 16x16: [byte; 13] header ("P6\n16 16\n255\n") + [[byte; 48]; 16] body
+//     (sixteen 16-pixel rows; a flat 768-lane body would exceed the ceiling,
+//     and the two-digit dims are spelled, not computed — ENG-PRESSURE-0023).
+// MNCS cannot write files, create streams, or print (ENG-PRESSURE-0022):
+// each probe returns its buffer across the experiment boundary as a value,
+// and `scripts/extract_artifact.py` concatenates the documented buffers
+// verbatim to disk. That script contains no engine semantics — no colors,
+// no layout, no pixels — only transport. If it ever grew any, that would
+// be a policy violation, not an optimization.
+module engine.render.ppm;
+
+use engine.image.framebuffer as fb;
+use engine.image.color as color;
+
+// One RGB triple of one FB8 lane.
+fn triple8(frame: fb.FB8, px: u64) -> (result: [byte; 3]) {
+    let v: i64 = fb.get8(frame, px / 8, px % 8);
+    return [(color.unpack_r(v) % 256) as byte, (color.unpack_g(v) % 256) as byte, (color.unpack_b(v) % 256) as byte];
+}
+
+// One RGB triple of one FB16 lane.
+fn triple16(frame: fb.FB16, px: u64) -> (result: [byte; 3]) {
+    let v: i64 = fb.get16(frame, px / 16, px % 16);
+    return [(color.unpack_r(v) % 256) as byte, (color.unpack_g(v) % 256) as byte, (color.unpack_b(v) % 256) as byte];
+}
+
+fn blankrow() -> (result: [byte; 48]) {
+    return [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+}
+
+// One 16-pixel row of the 16x16 body (48 bytes).
+fn ppm16_row(frame: fb.FB16, r: u64) -> (result: [byte; 48]) {
+    let base: [byte; 48] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    iterate i over base carrying out: [byte; 48] = base {
+        let px: u64 = r *% 16 +% (i / 3);
+        let ch: u64 = i % 3;
+        next out = replace(out, i, triple16(frame, px)[ch]);
+    }
+    return out;
+}
+
+// ---- Artifact probes: each returns one exact buffer ----
+
+fn probe_ppm8_head() -> (result: [byte; 11]) {
+    return [80, 54, 10, 56, 32, 56, 10, 50, 53, 53, 10];
+}
+
+fn probe_ppm8_body() -> (result: [[byte; 3]; 64]) {
+    let frame: fb.FB8 = fb.set8(fb.set8(fb.blank8(255), 2, 2, 4278190335), 5, 5, 16711935);
+    let base: [[byte; 3]; 64] = [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    iterate i over base carrying out: [[byte; 3]; 64] = base {
+        next out = replace(out, i, triple8(frame, i));
+    }
+    return out;
+}
+
+fn probe_ppm16_head() -> (result: [byte; 13]) {
+    return [80, 54, 10, 49, 54, 32, 49, 54, 10, 50, 53, 53, 10];
+}
+
+fn probe_ppm16_body() -> (result: [[byte; 48]; 16]) {
+    let frame: fb.FB16 = fb.blank16(255);
+    let base: [[byte; 48]; 16] = [blankrow(), blankrow(), blankrow(), blankrow(), blankrow(), blankrow(), blankrow(), blankrow(), blankrow(), blankrow(), blankrow(), blankrow(), blankrow(), blankrow(), blankrow(), blankrow()];
+    iterate r over base carrying out: [[byte; 48]; 16] = base {
+        next out = replace(out, r, ppm16_row(frame, r));
+    }
+    return out;
+}
+
+// Small integer probes for the matrix (byte buffers compare as values too,
+// but these pin the shape cheaply on slow backends).
+fn probe_ppm8_len() -> (result: i64) {
+    return 203;
+}
+
+fn probe_ppm16_len() -> (result: i64) {
+    return 781;
+}
