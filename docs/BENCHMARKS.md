@@ -21,8 +21,10 @@ Notes:
   golden: two independent corpus paths, one value.
 - Per-lane step cost is roughly linear: `step64` ≈ 150k steps
   (`simulation-particles`), so `fountain256` ≈ 4× that plus digest.
-- Cross-backend step comparison is unproven: each backend reports its own
-  `steps`, and whether the unit is commensurable across lowering strategies
-  is itself pressure for the evidence model (cf. `docs/PRESSURE.md`).
+- Cross-backend step comparison is confirmed incomparable, not merely
+  unproven: Cranelift reports `steps=1` for work the reference backend
+  counts in six digits (cf. ENG-PRESSURE-0016 in `docs/PRESSURE.md`).
+  Until each backend defines its `steps` unit, only same-backend
+  step deltas across compiler versions are meaningful.
 - Re-run: `python3 scripts/conformance.py --backend <b> bench-pool`, then
   read `steps` from the backend's `result.json` under the evidence dir.

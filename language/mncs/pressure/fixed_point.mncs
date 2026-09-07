@@ -7,7 +7,7 @@ mncs 0.10;
 module pressure.fixed_point;
 
 // Truncating Q16.16 multiply, self-contained (cf. engine.math.scalar).
-fn fx_mul(a: i64, b: i64) -> (result: i64) {
+fn fp_mul(a: i64, b: i64) -> (result: i64) {
     let q: i64 = (a *% b) / 65536;
     let r: i64 = (a *% b) % 65536;
     let z: i64 = 0;
@@ -17,5 +17,5 @@ fn fx_mul(a: i64, b: i64) -> (result: i64) {
 
 // 1.5 * 2.25 = 3.375, i.e. 221184 in Q16.16.
 fn probe_fmul() -> (result: i64) {
-    return fx_mul(98304, 147456);
+    return fp_mul(98304, 147456);
 }

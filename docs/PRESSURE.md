@@ -410,6 +410,85 @@ with per-file expected diagnostics in that directory's `README.md`.
 - **Evidence**: `boids.mncs` neighborhood fold; flock16 step cost.
 - **Status**: open.
 
+### ENG-PRESSURE-0016 — workload scale vs orchestration timeouts; `steps` is not a cross-backend cost unit
+
+- **Area**: backend (execution cost) + evidence model (cost-report
+  comparability) + orchestration (`scripts/conformance.py`).
+- **Workload**: `scene-scene` corpus (14 cases, 12-triangle raster frames
+  each) on reference and Cranelift.
+- **Desired MNCS expression**: n/a (this is about cost, not expression):
+  heavy corpora should complete inside the orchestration budget, and the
+  reported `steps` should mean the same thing everywhere.
+- **Observed limitation**: measured on a shared loaded box (wall-clock is
+  noisy; treat ratios as order-of-magnitude). The full 14-case scene corpus
+  exceeds 280 s on the *reference* backend (`timeout 280` killed it at
+  4m40s, rc=124); a single heavy case (`cube-0`) takes 3m09s on Cranelift
+  with `expectation_met=true`. A 600 s per-corpus orchestration timeout
+  therefore cannot fit the Cranelift scene cell (~14 cases), and the first
+  full-matrix attempt died on exactly that cell with an uncaught
+  `TimeoutExpired`. Separately, the Cranelift case reports `steps=1`
+  against six-digit reference step counts for equivalent work: `steps` is
+  backend-local, not a portable cost unit.
+- **Minimal reproducer**: `tests/corpora/scene-scene.json` on
+  `mncs-cranelift` (single-case evidence: `cube-0` 3m09s, met) vs
+  `mncs-research-bytecode` (full corpus >280 s).
+- **Targets affected**: all backends for scale; Cranelift for the
+  `steps` gap.
+- **Correctness impact**: none (values exact everywhere measured).
+- **Cost impact**: matrix cells for heavy corpora need ~hour-scale budgets
+  or per-case splitting; cross-backend performance claims cannot use
+  `steps` until its unit is defined per backend.
+- **Owner repository**: `mncs-language` (backend execution cost,
+  cost-report semantics); orchestration half fixed here
+  (`conformance.py` now records `TIMEOUT` at 1200 s instead of crashing).
+- **Evidence**: `time` outputs above; `scene-cranelift.out` single-case
+  artifact; `conformance.py` timeout handling commit.
+- **Status**: open.
+
+### ENG-PRESSURE-0017 — same-named functions in different modules break LLVM/C11/Cranelift lowering
+
+- **Area**: backend (mncs-llvm-ir, mncs-c11, mncs-cranelift symbol lowering).
+- **Workload**: `pressure.pins` (regression net delegating to twelve
+  reproducer modules).
+- **Desired MNCS expression**: two modules each defining `fx_mul` (or any
+  shared name) with module-qualified calls — elaboration accepts this, so
+  lowering should too.
+- **Observed limitation**: the frontend namespaces correctly (study clean),
+  but all three backends report the whole program `unsupported` (no cases
+  execute, no diagnostics) when any unqualified function name occurs in
+  more than one module of the program — including root-vs-import pairs
+  (`pins.probe_fmul` vs `fixed_point.probe_fmul`) and transitive pairs
+  (`fixed_point.fx_mul` vs `engine.math.scalar.fx_mul`, pulled in via
+  `clip_guard → rasterizer → scalar`). Bisected from 12 imports to the
+  minimal pair `fixed_point.probe_fmul() +% clip_guard.probe_wzero_dropped()`,
+  then proved by rename: `fx_mul → fp_mul` flips the program from
+  `unsupported` to `returned`-correct (`-7979948944140378112`, exact).
+  Renaming all fifteen pins delegates to `pp_*` took the corpus from
+  FAIL-15 to PASS-15 on LLVM-IR, C11, and Cranelift, and also resolved
+  the WASM `half → invalid_request` miss (same mechanism, different
+  backend symptom): `pressure-pins` is now 5/5 green.
+- **Minimal reproducer**: scratch pair (not committed):
+  `use pressure.fixed_point; use pressure.clip_guard;` calling one probe
+  from each on `mncs-llvm-ir` → `unsupported`; rename either `fx_mul` →
+  `returned`. Committed regression coverage: `pressure-pins` on all five
+  backends (it fails loudly if a collision is reintroduced).
+- **Targets affected**: mncs-llvm-ir, mncs-c11, mncs-cranelift. Reference
+  and WASM execute collided programs correctly (modulo 0001).
+- **Correctness impact**: unsupported (loud refusal — strictly better than
+  silent mislinking, but it blocks any natural multi-module program that
+  reuses helper names).
+- **Cost impact**: engine-wide unique-name discipline (audit: no two
+  co-linked engine modules share a name today except the orphaned
+  `foundation/probe.clamp_channel` vs `color.clamp_channel`, which never
+  links into one program); latent trap for every future module.
+- **Owner repository**: `mncs-language` (qualified symbol lowering in the
+  three backends).
+- **Evidence**: bisect series (`ba`/`bb` pass, `f1` fails, `g1` passes
+  after rename) with `unsupported` vs `returned` case statuses;
+  `pressure-pins` FAIL-15 → PASS-15 on LLVM-IR across the rename commit.
+- **Status**: open (engine side worked around by globally-unique helper
+  names; the language-side fix is qualified lowering).
+
 ## Deliberately out of scope this run
 
 - CUDA/PTX execution paths (Stage 6): no GPU runs were attempted; PTX

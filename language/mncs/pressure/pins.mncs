@@ -22,62 +22,62 @@ use pressure.fixed_pool as p0013;
 use pressure.hash_stream as p0014;
 use pressure.neighborhood as p0015;
 
-fn probe_fmul() -> (result: i64) {
+fn pp_fmul() -> (result: i64) {
     return p0002.probe_fmul();
 }
 
-fn probe_negwrap() -> (result: i64) {
+fn pp_negwrap() -> (result: i64) {
     return p0003.probe_neg_wrap_val();
 }
 
-fn probe_barelit() -> (result: i64) {
+fn pp_barelit() -> (result: i64) {
     return p0003.probe_bare_literal_val();
 }
 
-fn probe_chain64() -> (result: i64) {
+fn pp_chain64() -> (result: i64) {
     return p0004.probe_chained64();
 }
 
-fn probe_half() -> (result: i64) {
+fn pp_half() -> (result: i64) {
     return p0005.probe_half_val();
 }
 
-fn probe_wrapped() -> (result: i64) {
+fn pp_wrapped() -> (result: i64) {
     return p0007.probe_wrapped();
 }
 
-fn probe_split() -> (result: i64) {
+fn pp_split() -> (result: i64) {
     return p0007.probe_split();
 }
 
-fn probe_divlit() -> (result: i64) {
+fn pp_divlit() -> (result: i64) {
     return p0008.probe_div_literal();
 }
 
-fn probe_chlerp() -> (result: i64) {
+fn pp_chlerp() -> (result: i64) {
     return p0008.probe_channel_lerp();
 }
 
-fn probe_unpackb() -> (result: i64) {
+fn pp_unpackb() -> (result: i64) {
     return p0009.probe_unpack_b_val();
 }
 
-fn probe_seqsum() -> (result: i64) {
+fn pp_seqsum() -> (result: i64) {
     return p0010.probe_sum();
 }
 
-fn probe_wzero() -> (result: i64) {
+fn pp_wzero() -> (result: i64) {
     return p0012.probe_wzero_dropped();
 }
 
-fn probe_pingpong() -> (result: i64) {
+fn pp_pingpong() -> (result: i64) {
     return p0013.probe_pingpong();
 }
 
-fn probe_stream4() -> (result: i64) {
+fn pp_stream4() -> (result: i64) {
     return p0014.probe_stream4();
 }
 
-fn probe_nbcounts() -> (result: i64) {
+fn pp_nbcounts() -> (result: i64) {
     return p0015.probe_counts();
 }

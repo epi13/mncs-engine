@@ -90,10 +90,13 @@ def run_corpus(corpus_name, backend, out_base):
     root = module_root(corpus_path)
     out_dir = os.path.join(out_base, corpus_name, backend)
     os.makedirs(out_dir, exist_ok=True)
-    proc = subprocess.run(
-        [MNCS_BIN, "experiment", "run", root, "--backend", backend,
-         "--corpus", corpus_path, "--output-dir", out_dir],
-        capture_output=True, text=True, env=env, timeout=600)
+    try:
+        proc = subprocess.run(
+            [MNCS_BIN, "experiment", "run", root, "--backend", backend,
+             "--corpus", corpus_path, "--output-dir", out_dir],
+            capture_output=True, text=True, env=env, timeout=1200)
+    except subprocess.TimeoutExpired:
+        return {"timeout": True}
     if proc.returncode not in (0, 1):
         return {"error": proc.stderr[-2000:] + proc.stdout[-2000:]}
     try:
@@ -136,6 +139,10 @@ def main(argv):
             outcome = run_corpus(corpus, backend, out_base)
             if "error" in outcome:
                 summary[corpus][backend] = "ERROR"
+                failures += 1
+                continue
+            if "timeout" in outcome:
+                summary[corpus][backend] = "TIMEOUT"
                 failures += 1
                 continue
             result = outcome["result"]
