@@ -2,6 +2,8 @@
 
 This roadmap is a pressure sequence, not a feature checklist. Each stage should expose language/backend gaps before the next layer raises complexity.
 
+Status after pressure campaign 01 is noted per stage below.
+
 ## Stage 0 — foundation
 
 - Establish MNCS-only implementation policy.
@@ -20,6 +22,9 @@ This roadmap is a pressure sequence, not a feature checklist. Each stage should 
 
 Exit condition: the same MNCS drawing program produces equivalent evidence on the supported reference and accelerated paths.
 
+Status: DONE on the reference backend (`render-draw2d` 12/12); 5-backend
+equivalence tracked by the matrix (see `tests/known-divergences.json`).
+
 ## Stage 2 — reference rasterizer
 
 - Vertex representation and transforms.
@@ -32,6 +37,10 @@ Exit condition: the same MNCS drawing program produces equivalent evidence on th
 
 Exit condition: reference images are reproducible and backend comparisons are automated enough to detect regressions.
 
+Status: DONE on the reference backend (`raster-rasterizer` 9/9, checksums
+cross-validated against draw2d and an independent model); matrix automation
+in place via `scripts/conformance.py`.
+
 ## Stage 3 — heterogeneous compute
 
 - Express data-parallel work in target-neutral MNCS.
@@ -39,6 +48,11 @@ Exit condition: reference images are reproducible and backend comparisons are au
 - Compare CPU, WASM/SIMD where available, and CUDA/PTX implementations.
 
 Exit condition: acceleration does not require applications to encode CUDA thread/block identities into ordinary engine logic.
+
+Status: NOT STARTED as a stage — no target-neutral parallel construct
+exists yet (0004/0013/0015 constrain the design). The 5-backend matrix
+runs the same sources everywhere, which is the conformance half of this
+stage, but there is no dispatch/synchronization/atomics vocabulary.
 
 ## Stage 4 — basic 3D
 
@@ -50,6 +64,10 @@ Exit condition: acceleration does not require applications to encode CUDA thread
 
 Exit condition: one source-level scene is rendered through multiple supported backends with declared tolerances and evidence.
 
+Status: DONE on the reference backend (`scene-scene` 14/14, cube pipeline
+with viewport/corner debug pins); multi-backend rendering tracked by the
+matrix. No tolerances were needed: all backends compared exactly so far.
+
 ## Stage 5 — simulation pressure
 
 - Particle systems from tiny to multi-million element workloads.
@@ -59,6 +77,11 @@ Exit condition: one source-level scene is rendered through multiple supported ba
 - Candidate cloth/fluid/voxel/ray workloads.
 
 Exit condition: the engine provides enough realistic parallel pressure to reveal compiler lowering and memory-layout weaknesses.
+
+Status: STARTED — particles/boids/fields land this run with cost
+benchmarks (`docs/BENCHMARKS.md`). Scaling wall documented as
+ENG-PRESSURE-0015 (O(n²) is the only expressible neighborhood); cloth,
+fluid, voxel, and ray workloads are future work.
 
 ## Stage 6 — cross-generation CUDA pressure
 
